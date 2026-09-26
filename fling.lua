@@ -1,6 +1,6 @@
 --[[
 	============================================================
-	 FLING RIG  -  ONE FILE, CLIENT SIDE ONLY
+	 FLING RIG2  -  ONE FILE, CLIENT SIDE ONLY
 	 No RemoteEvents. No server Scripts. Paste once and play.
 	 Physics: Humanoid Physics state + glued CFrame + 3-AXIS
 	          tumble (AssemblyAngularVelocity on X/Y/Z) with a
@@ -23,17 +23,18 @@ local PGUI = PLR:WaitForChild("PlayerGui")
 local CFG = {
 	Hotkey      = Enum.KeyCode.F,   -- show / hide the mini window
 
-	ApproachTime = 0.05,            -- split second to close in before the spin
-	SpinTime     = 1.80,            -- glued tumble duration
-	Leash        = 90,              -- let go once they are this far from the start
-	                             -- (stops us being dragged off the map with them)
-
-	-- SUSTAINED DRIVE. The tumble alone only grazes them for a few ms before
-	-- the solver shoves us apart. Holding a forward shove into them for the
-	-- whole spin is what actually builds into a launch.
-	DriveSpeed   = 700,             -- forward studs/s into the target
-	DriveRamp    = 1.6,             -- DriveSpeed multiplier by the end of the spin
-	PopUp        = 1400,            -- last-frame upward kick that sends them out
+	ApproachTime = 0.05,            -- split second to line up before a punch
+	StandOff     = 3,               -- start the pass ALREADY touching them
+	Punches      = 5,               -- ram passes per fling
+	PunchStep    = 0.11,            -- seconds of ram per pass
+	ReleaseTime  = 0.06,            -- zero-velocity window that resolves the overlap
+	RamSpeed     = 1400,            -- drive speed straight through them
+	RamRamp      = 300,             -- added per punch
+	MaxRamSpeed  = 2600,            -- hard cap
+	RamUp        = 150,             -- slight lift while passing through
+	PopUp        = 1300,            -- upward kick on the release frame
+	ReleaseBack  = 140,             -- gentle back-off so the kick lands on THEM
+	Leash        = 150,             -- let go once they are this far from the start
 
 	-- 3-AXIS tumble. Single-axis spin just parts them aside; all three
 	-- axes at once grinds the body into the target from every angle.
@@ -42,13 +43,10 @@ local CFG = {
 	TumbleZ      = -15999,
 	SpinDir      = 0,               -- 0 = randomise per attempt, +1 / -1 = fixed
 
-	-- small, mostly-upward linear push. Keep this LOW: a big value makes
-	-- the solver eject YOU instead of launching them.
-	LaunchUp     = 400,
-	LateralPush  = 25,
-	Jitter       = 5,               -- position jitter, so we are not dead-centre
+	Jitter       = 0,               -- position jitter (off: we ram, not glue)
 
 	AllDelay     = 0.70,            -- seconds between players in FLING ALL
+	DetachDist   = 10,              -- how far to jump clear of the target on stop
 
 	VoidY        = -150,            -- below this we fell out: go home immediately
 	ReturnSnap   = 140,             -- further than this from home -> teleport
@@ -123,6 +121,7 @@ local F = {
 	tgtRoot   = nil,
 	pt        = 0,       -- time inside current stage
 	attempt   = 0,
+	punch     = 0,       -- which ram pass we are on
 	dir       = Vector3.new(1, 0, 0),   -- throw direction (horizontal)
 	ang       = 0,
 	spinSign  = 1,
@@ -574,6 +573,7 @@ end
 
 local function jitterVec()
 	local j = CFG.Jitter
+	if j <= 0 then return Vector3.zero end
 	return Vector3.new((math.random() * 2 - 1) * j, (math.random() * 2 - 1) * j,
 		(math.random() * 2 - 1) * j)
 end
@@ -667,6 +667,27 @@ local function targetMetrics()
 	return r.AssemblyLinearVelocity.Magnitude, (r.Position - F.seedPos).Magnitude
 end
 
+-- Get OUT of their body before we stop driving. If we just zero the
+-- velocities while still deeply overlapped, the solver resolves all that
+-- penetration in one go and bats the target away on its own - that is the
+-- "I pressed STOP and it flung him anyway" bug. Teleporting out removes the
+-- overlap instead, so there is nothing left to resolve.
+local function detachFromTarget()
+	local root = selfRoot
+	if not root or not root.Parent then return end
+	stopSpin()
+	local tr = F.tgtRoot
+	if tr and tr.Parent then
+		local away = root.Position - tr.Position
+		if away.Magnitude < 0.01 then away = F.dir end
+		place(root, tr.Position + away.Unit * CFG.DetachDist + Vector3.new(0, 1, 0))
+	end
+	pcall(function()
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+	end)
+end
+
 local function goHome()
 	stopSpin()
 	F.retSnap = true
@@ -725,7 +746,7 @@ end
 abortFling = function(reason)
 	if not F.active then return end
 	F.active = false
-	stopSpin()
+	detachFromTarget()
 	prepareSelf(false)
 	snapshotSelf()
 	F.target, F.tgtChar, F.tgtRoot = nil, nil, nil
@@ -759,6 +780,7 @@ startFling = function()
 	F.ang      = math.random() * math.pi * 2
 	F.dir      = Vector3.new(math.cos(F.ang), 0, math.sin(F.ang))
 	F.spinSign = (CFG.SpinDir ~= 0) and CFG.SpinDir or (math.random() < 0.5 and -1 or 1)
+	F.punch = 0
 	F.retSnap  = true
 	F.attempt  = 1
 	F.ms, F.md = 0, 0
@@ -792,61 +814,59 @@ local function flingStep(dt)
 		F.tgtChar, F.tgtRoot, tr = c, r2, r2
 	end
 
-	------------------------------------------------- WINDUP
+	------------------------------------------------- WINDUP (line up touching)
 	if stage == STAGE.WINDUP then
 		if not W.fRam() then return setStage(STAGE.LAUNCH) end
 		controlSelf(true)
-		pinTo(root, tr.Position)
+		F.punch = F.punch + 1
+		-- aim at where they are NOW, then stand off just close enough that
+		-- our limbs are already brushing them
+		local aim = tr.Position - root.Position
+		local flat = Vector3.new(aim.X, 0, aim.Z)
+		if flat.Magnitude < 0.5 then flat = F.dir end
+		F.dir = flat.Unit
+		place(root, tr.Position - F.dir * CFG.StandOff + Vector3.new(0, 0.5, 0))
 		root.AssemblyLinearVelocity = Vector3.zero
+		tumbleSelf(F.spinSign)
+		W.say(string.format("punching %s  %d/%d", F.target.DisplayName,
+			F.punch, CFG.Punches), CLR.acc)
 		if F.pt >= CFG.ApproachTime then setStage(STAGE.RAM) end
 
-	------------------------------------------------- RAM (glued 3-axis tumble)
+	------------------------------------------------- RAM (drive THROUGH them)
 	elseif stage == STAGE.RAM then
 		controlSelf(true)
-
-		-- 1) GLUE: stay inside their body, following them
-		pinTo(root, tr.Position + jitterVec())
-
-		-- 2) TUMBLE: all three axes, this is what grinds them outward
+		-- NO position pinning here on purpose. Pinning let the solver push
+		-- us out every frame, so the overlap never got deep and the impulse
+		-- stayed weak. Free flight lets us actually pass through them.
 		tumbleSelf(F.spinSign)
+		local speed = math.min(CFG.RamSpeed + (F.punch - 1) * CFG.RamRamp,
+			CFG.MaxRamSpeed)
+		root.AssemblyLinearVelocity = F.dir * speed + Vector3.new(0, CFG.RamUp, 0)
+		if F.pt >= CFG.PunchStep then setStage(STAGE.LAUNCH) end
 
-		-- 3) SUSTAINED DRIVE: hold a forward shove for the WHOLE spin, and
-		--    ramp it. This is what turns a few ms of contact into a launch -
-		--    the tumble alone just grazes them before we get pushed apart.
-		local k = math.min(F.pt / CFG.SpinTime, 1)
-		local drive = CFG.DriveSpeed * (1 + CFG.DriveRamp * k)
-		root.AssemblyLinearVelocity = F.dir * drive
-			+ Vector3.new(0, CFG.LaunchUp, 0)
-
-		-- time is up: one last deep contact with a big upward kick. This
-		-- single frame is the pop that actually sends them off the map.
-		if F.pt >= CFG.SpinTime then
-			pinTo(root, tr.Position)
-			tumbleSelf(F.spinSign)
-			root.AssemblyLinearVelocity = F.dir * (CFG.DriveSpeed * 2)
-				+ Vector3.new(0, CFG.PopUp, 0)
-			return goHome()
-		end
-
-		-- LEASH: once they are properly launched, let go. If we stay glued
-		-- we get dragged off the map with them and die on the way home.
-		if (tr.Position - F.seedPos).Magnitude > CFG.Leash then
-			pinTo(root, tr.Position)
-			tumbleSelf(F.spinSign)
-			root.AssemblyLinearVelocity = F.dir * (CFG.DriveSpeed * 2)
-				+ Vector3.new(0, CFG.PopUp, 0)
-			return goHome()
-		end
-
-	------------------------------------------------- LAUNCH (RAM off: one pop)
+	------------------------------------------------- LAUNCH (release: the kick)
 	elseif stage == STAGE.LAUNCH then
 		controlSelf(true)
-		pinTo(root, tr.Position)
 		tumbleSelf(F.spinSign)
-		local power = W.fLaunch() and 2.5 or 1
-		root.AssemblyLinearVelocity = F.dir * (CFG.DriveSpeed * power)
-			+ Vector3.new(0, CFG.PopUp * power, 0)
-		goHome()
+		-- This is the "FLING then STOP" moment, done on purpose every pass:
+		-- drop our velocity to nothing while still buried in them, so the
+		-- solver flushes the whole accumulated overlap out in ONE impulse.
+		-- The gentle back-off biases that impulse onto them, not us.
+		root.AssemblyLinearVelocity = -F.dir * CFG.ReleaseBack
+			+ Vector3.new(0, CFG.PopUp, 0)
+
+		if F.pt >= CFG.ReleaseTime then
+			stopSpin()
+			-- far enough? let go, or throw another punch
+			if (tr.Position - F.seedPos).Magnitude > CFG.Leash then
+				return goHome()
+			end
+			if W.fLaunch() and F.punch < CFG.Punches then
+				F.retSnap = true
+				return setStage(STAGE.WINDUP)
+			end
+			goHome()
+		end
 
 	------------------------------------------------- RETURN
 	elseif stage == STAGE.RETURN then
@@ -854,15 +874,17 @@ local function flingStep(dt)
 		controlSelf(false)
 		if W.fReturn() and F.origin then
 			local home = F.origin.Position
-			-- first frame: if we are too far out to fly home safely
-			-- (terrain / void on the way), just teleport. No death.
+			-- first frame: get clear of the target cleanly, and if we are too
+			-- far out to fly home (terrain / void on the way) just teleport
 			if F.retSnap then
 				F.retSnap = false
+				detachFromTarget()
 				if (root.Position - home).Magnitude > CFG.ReturnSnap then
 					place(root, home + Vector3.new(0, CFG.NavHeight, 0))
-					root.AssemblyLinearVelocity = Vector3.zero
+					pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
 				end
 			end
+
 			local k = math.min(F.pt / CFG.ReturnTime, 1)
 			local goal = home + Vector3.new(0, CFG.NavHeight, 0) * k
 			place(root, root.Position:Lerp(goal, math.min(dt * 14, 1)))
@@ -894,6 +916,7 @@ local function flingStep(dt)
 		if CFG.SpinDir == 0 then
 			F.spinSign = math.random() < 0.5 and -1 or 1
 		end
+		F.punch = 0
 		F.retSnap = true
 		W.say(string.format("retry %d/%d on %s", F.attempt, CFG.MaxAttempts, name), CLR.warn)
 		setStage(STAGE.WINDUP)
