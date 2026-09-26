@@ -24,13 +24,15 @@ local CFG = {
 
 	RingRadius  = 12,               -- orbit start during the approach
 	RingHeight  = 3.5,
-	CloseRadius = 1.6,              -- how deep we sit inside their box
-	WindupTime  = 0.90,             -- roam + spin-up before the blend
+	CloseRadius = 1.2,              -- how deep we sit inside their box
+	WindupTime  = 0.30,             -- short straight-line approach
 
 	SpinTime    = 1.50,             -- blender duration inside the target
 	LaunchTime  = 0.55,             -- carry-out while still spinning
-	SpinOmega   = 999999,           -- rad/s on our own root
-	SpinRamp    = 45000,            -- omega used while winding up
+	SpinRate    = 48,               -- rad/s our own body is rotated by (CFrame sweep)
+	SpinOmega   = 999999,           -- rad/s pushed into AssemblyAngularVelocity
+	BobAmp      = 0.7,              -- vertical bob so the sweep covers their body
+	BobRate     = 42,
 	SpinDir     = 0,                -- 0 = randomise per attempt, +1 / -1 = fixed
 	Jitter      = 90,               -- subtle fluctuating linear speed
 
@@ -111,6 +113,7 @@ local F = {
 	dir      = Vector3.new(1, 0, 0),
 	ang      = 0,
 	spinSign = 1,
+	spinAngle = 0,      -- self-driven body rotation for the blender
 	origin   = nil,      -- the spot we let go from (we come back here)
 	seedPos  = nil,
 	ms, md   = 0, 0,     -- last measured target speed / distance
@@ -522,8 +525,7 @@ snapshotSelf = function()
 	end
 end
 
--- move our root to a point, optionally keeping the physics-integrated
--- rotation so the spin we are applying is never visually cancelled
+-- move our root to a point, keeping the physics-integrated rotation
 local function forcePos(part, pos, keepRot)
 	if keepRot then
 		local cf = part.CFrame
@@ -531,6 +533,19 @@ local function forcePos(part, pos, keepRot)
 	else
 		part.CFrame = CFrame.new(pos, pos + F.dir)
 	end
+end
+
+-- The blender placement. Writing CFrame alone resets AssemblyAngularVelocity,
+-- so we advance the Y rotation OURSELVES and write that in - that is what the
+-- collision solver actually sweeps, and it is what makes the limbs twist
+-- through the target instead of the body just orbiting it.
+local function placeSpin(part, pos)
+	part.CFrame = CFrame.new(pos) * CFrame.Angles(0, F.spinAngle, 0)
+end
+
+-- advance the self-driven body rotation (wrapped, so no float drift)
+local function advanceSpin(dt, rate)
+	F.spinAngle = (F.spinAngle + dt * rate) % (math.pi * 2)
 end
 
 -- subtle fluctuating linear velocity, keeps the blender from settling
@@ -652,6 +667,7 @@ startFling = function()
 	F.ang     = math.random() * math.pi * 2
 	F.dir     = Vector3.new(math.cos(F.ang), 0, math.sin(F.ang))
 	F.spinSign = (CFG.SpinDir ~= 0) and CFG.SpinDir or (math.random() < 0.5 and -1 or 1)
+	F.spinAngle = 0
 	F.attempt = 1
 	F.ms, F.md = 0, 0
 	prepareSelf(true)
@@ -679,18 +695,18 @@ local function flingStep(dt)
 		F.tgtChar, F.tgtRoot, tr = c, r2, r2
 	end
 
-	------------------------------------------------- WINDUP (roam + spin up)
+	------------------------------------------------- WINDUP (short approach)
 	if stage == STAGE.WINDUP then
 		if not W.fRam() then return setStage(STAGE.LAUNCH) end
 
 		local k = math.min(F.pt / CFG.WindupTime, 1)
-		F.ang = F.ang + dt * (2.2 + 6.5 * k)
-		-- orbit collapses from RingRadius down into their bounding box
-		local r = CFG.RingRadius + (CFG.CloseRadius - CFG.RingRadius) * k
-		forcePos(root, tr.Position + Vector3.new(math.cos(F.ang) * r,
-			CFG.RingHeight * (1 - k * 0.75), math.sin(F.ang) * r), true)
-		-- wind the blender up while closing in
-		spinSelf(F.spinSign * CFG.SpinRamp * k)
+		-- straight line in from the ring side, no lazy circling
+		local from = tr.Position + Vector3.new(math.cos(F.ang) * CFG.RingRadius,
+			CFG.RingHeight, math.sin(F.ang) * CFG.RingRadius)
+		local to   = tr.Position + Vector3.new(math.cos(F.ang) * CFG.CloseRadius, 0,
+			math.sin(F.ang) * CFG.CloseRadius)
+		forcePos(root, from:Lerp(to, k), false)
+		advanceSpin(dt, CFG.SpinRate * k)
 
 		if F.pt >= CFG.WindupTime then setStage(STAGE.RAM) end
 
@@ -702,9 +718,12 @@ local function flingStep(dt)
 				pcall(function() p.CanCollide = true; p.Massless = false end)
 			end
 		end
-		-- sit inside their bounding box, spinning flat out
-		local j = jitter()
-		forcePos(root, tr.Position + j * 0.06, true)
+
+		advanceSpin(dt, CFG.SpinRate)
+		-- locked inside their bounding box, twisting at full rate
+		local bob = math.sin(F.pt * CFG.BobRate) * CFG.BobAmp
+		local j   = jitter()
+		placeSpin(root, tr.Position + Vector3.new(0, bob, 0) + j * 0.05)
 		root.AssemblyLinearVelocity = j
 		spinSelf(F.spinSign * CFG.SpinOmega)
 
@@ -717,9 +736,10 @@ local function flingStep(dt)
 			return setStage(STAGE.RETURN)
 		end
 		local k = math.min(F.pt / CFG.LaunchTime, 1)
-		-- still spinning flat out while we drift outward, dragging them along
-		forcePos(root, tr.Position + F.dir * (CFG.CarryRadius * k)
-			+ Vector3.new(0, 1.5 * k, 0), true)
+		-- still twisting flat out while we drift outward, dragging them along
+		advanceSpin(dt, CFG.SpinRate)
+		placeSpin(root, tr.Position + F.dir * (CFG.CarryRadius * k)
+			+ Vector3.new(0, 1.5 * k, 0))
 		root.AssemblyLinearVelocity = F.dir * (CFG.CarryDrift * k) + jitter()
 		spinSelf(F.spinSign * CFG.SpinOmega)
 
@@ -763,6 +783,7 @@ local function flingStep(dt)
 		if CFG.SpinDir == 0 then
 			F.spinSign = math.random() < 0.5 and -1 or 1
 		end
+		F.spinAngle = 0
 		W.say(string.format("retry %d/%d on %s", F.attempt, CFG.MaxAttempts, name), CLR.warn)
 		setStage(STAGE.WINDUP)
 	end
