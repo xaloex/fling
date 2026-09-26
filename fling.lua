@@ -52,6 +52,13 @@ local CFG = {
 	Noclip       = true,
 	PhaseStep    = 12,              -- studs teleported per phase-through
 
+	-- INERTIA. Invisible heavy parts welded to our root. Making our own
+	-- assembly ~100x heavier means the reaction from every single hit has
+	-- nowhere to go except into the target, so we are the one thing in this
+	-- script that cannot be knocked across the map.
+	Ballast      = 8,               -- number of welded mass blocks
+	BallastSize  = 10,              -- 10^3 studs each -> ~700 mass apiece
+
 	VoidY        = -150,            -- below this WE fell out: go home immediately
 	ReturnSnap   = 140,             -- further than this from home -> teleport
 	ReturnTime   = 0.50,
@@ -139,6 +146,7 @@ local F = {
 
 local selfChar, selfRoot, selfHum, selfParts = nil, nil, nil, {}
 local savedParts, savedHum, savedRoot = {}, nil, nil
+local ballast = {}   -- our welded mass blocks, destroyed when the fling ends
 
 local W   = {}        -- gui widgets + gui functions
 local rows = {}       -- built row widgets, keyed by userId
@@ -604,7 +612,7 @@ local function stopSpin()
 	end)
 end
 
--- we grind our body into people at high speed, so never die
+-- never die, and stay put
 local function keepAlive()
 	local hum = selfHum
 	if hum and hum.Parent then
@@ -612,6 +620,50 @@ local function keepAlive()
 		if hum.Health < 1e8 then hum.Health = 1e9 end
 		hum.BreakJointsOnDeath = false
 	end
+end
+
+--============================================================
+-- INERTIA / NOCLIP ballast
+-- Mass does not depend on collision, so these blocks are invisible and
+-- non-colliding - they only add weight. Welded to the root they merge into
+-- one assembly, and the heavier it is the less any impulse can move us.
+--============================================================
+local function clearBallast()
+	for _, p in ipairs(ballast) do
+		if p and p.Parent then p:Destroy() end
+	end
+	ballast = {}
+end
+
+local function addBallast()
+	clearBallast()
+	local root = selfRoot
+	if not root or not root.Parent then return end
+	for _ = 1, CFG.Ballast do
+		local ok, p = pcall(function()
+			local q = Instance.new("Part")
+			q.Name = "FlingMass"
+			q.Size = Vector3.new(CFG.BallastSize, CFG.BallastSize, CFG.BallastSize)
+			q.Anchored = false
+			q.CanCollide = false
+			q.CanTouch = false
+			q.CanQuery = false
+			q.Massless = false
+			q.Transparency = 1
+			q.Material = Enum.Material.SmoothPlastic
+			q.CFrame = root.CFrame
+			q.Parent = workspace
+			local w = Instance.new("WeldConstraint")
+			w.Part0 = root
+			w.Part1 = q
+			w.Parent = q
+			pcall(function() q:SetNetworkOwner(PLR) end)
+			return q
+		end)
+		if ok and p then table.insert(ballast, p) end
+	end
+	-- make sure we still own our own body after welding new mass to it
+	pcall(function() root:SetNetworkOwner(PLR) end)
 end
 
 -- our body is the projectile: solid, heavy, optionally invisible
@@ -637,9 +689,12 @@ local function prepareSelf(on)
 		end
 		controlSelf(true)
 		stopSpin()
+		-- heavy invisible mass: every impact goes into the target, not us
+		addBallast()
 	else
 		stopSpin()
 		controlSelf(false)
+		clearBallast()
 		for _, p in ipairs(selfParts) do
 			local s = savedParts[p]
 			pcall(function()
@@ -752,6 +807,7 @@ abortFling = function(reason)
 	F.active = false
 	detachFromTarget()
 	prepareSelf(false)
+	clearBallast()
 	snapshotSelf()
 	F.target, F.tgtChar, F.tgtRoot = nil, nil, nil
 	stage = STAGE.WINDUP
@@ -951,6 +1007,7 @@ scanPlayers()
 W.say(string.format("Ready - %d player(s) online", #Players:GetPlayers()), CLR.dim)
 
 PLR.CharacterRemoving:Connect(function()
+	clearBallast()
 	if F.active then abortFling("character reset") end
 end)
 
