@@ -2,6 +2,9 @@
 	============================================================
 	 FLING RIG  -  ONE FILE, CLIENT SIDE ONLY
 	 No RemoteEvents. No server Scripts. Paste once and play.
+	 Physics: pure client-side ANGULAR-VELOCITY COLLISION FLING
+	          (we only ever touch the LOCAL character; the target
+	           gets launched by Roblox's own collision solver)
 	 Install:  StarterPlayer > StarterPlayerScripts > script.lua
 	============================================================
 ]]
@@ -17,28 +20,31 @@ local PGUI = PLR:WaitForChild("PlayerGui")
 -- 1. CONFIG
 --============================================================
 local CFG = {
-	Hotkey       = Enum.KeyCode.F,   -- show / hide the mini window
+	Hotkey      = Enum.KeyCode.F,   -- show / hide the mini window
 
-	RingRadius   = 11,               -- orbit distance before the charge
-	RingHeight   = 4,
-	NavHeight    = 40,               -- height used while flying back
+	RingRadius  = 12,               -- orbit start during the approach
+	RingHeight  = 3.5,
+	CloseRadius = 1.6,              -- how deep we sit inside their box
+	WindupTime  = 0.90,             -- roam + spin-up before the blend
 
-	SpinTime     = 1.15,             -- spin them before the throw
-	RamPasses    = 6,                -- how many body charges
-	RamStep      = 0.30,             -- seconds per charge
-	RamSpeed     = 4200,
-	RamGrowth    = 0.22,
-	LaunchSpeed  = 5400,
-	UpBias       = 0.55,
-	HoldTime     = 0.60,
-	ReturnTime   = 0.75,
-	VerifyWait   = 1.40,
+	SpinTime    = 1.50,             -- blender duration inside the target
+	LaunchTime  = 0.55,             -- carry-out while still spinning
+	SpinOmega   = 999999,           -- rad/s on our own root
+	SpinRamp    = 45000,            -- omega used while winding up
+	SpinDir     = 0,                -- 0 = randomise per attempt, +1 / -1 = fixed
+	Jitter      = 90,               -- subtle fluctuating linear speed
 
-	MaxAttempts  = 3,                -- "try" count before giving up
-	SuccessSpeed = 260,
-	SuccessDist  = 70,
-	NewWindow    = 20,               -- seconds a joiner shows as NEW
-	Ghost        = true,             -- hide own limbs while flinging
+	CarryRadius = 7,                -- radius we drift out to while carrying
+	CarryDrift  = 260,              -- our own outward drift while carrying
+
+	ReturnTime  = 0.75,
+	NavHeight   = 40,               -- height used while flying back
+
+	MaxAttempts = 3,                -- "try" count before giving up
+	SuccessSpeed= 260,
+	SuccessDist = 70,
+	NewWindow   = 20,               -- seconds a joiner shows as NEW
+	Ghost       = true,             -- hide own limbs while flinging
 }
 
 local CLR = {
@@ -100,14 +106,11 @@ local F = {
 	target   = nil,
 	tgtChar  = nil,
 	tgtRoot  = nil,
-	tgtHum   = nil,
 	pt       = 0,        -- time inside current stage
 	attempt  = 0,
-	pass     = 0,
-	partIdx  = 1,
-	partList = {},
 	dir      = Vector3.new(1, 0, 0),
 	ang      = 0,
+	spinSign = 1,
 	origin   = nil,      -- the spot we let go from (we come back here)
 	seedPos  = nil,
 	ms, md   = 0, 0,     -- last measured target speed / distance
@@ -359,8 +362,13 @@ local function buildGUI()
 
 	function W.busy(on)
 		W.fling.Text = on and "BUSY" or "FLING"
-		W.fling.BackgroundColor3 = on and CLR.card and CLR.acc
-		W.fling.TextColor3 = on and CLR.dim or Color3.fromRGB(6, 20, 28)
+		if on then
+			W.fling.BackgroundColor3 = CLR.card
+			W.fling.TextColor3 = CLR.dim
+		else
+			W.fling.BackgroundColor3 = CLR.acc
+			W.fling.TextColor3 = Color3.fromRGB(6, 20, 28)
+		end
 	end
 
 	rnd.MouseButton1Click:Connect(function()
@@ -455,7 +463,10 @@ selectPlayer = function(uid)
 end
 
 --============================================================
--- 6. CHARACTER HELPERS
+-- 6. LOCAL-ONLY PHYSICS HELPERS
+--    Nothing in this section ever writes to another player's
+--    character - we only ever move OUR OWN assembly and let
+--    Roblox's collision solver do the launching.
 --============================================================
 local function partsOf(char)
 	local t = {}
@@ -511,7 +522,51 @@ snapshotSelf = function()
 	end
 end
 
--- our own body becomes the weapon: solid, heavy, optionally invisible
+-- move our root to a point, optionally keeping the physics-integrated
+-- rotation so the spin we are applying is never visually cancelled
+local function forcePos(part, pos, keepRot)
+	if keepRot then
+		local cf = part.CFrame
+		part.CFrame = CFrame.new(pos) * (cf - cf.Position)
+	else
+		part.CFrame = CFrame.new(pos, pos + F.dir)
+	end
+end
+
+-- subtle fluctuating linear velocity, keeps the blender from settling
+local function jitter()
+	return Vector3.new(
+		(math.random() * 2 - 1) * CFG.Jitter,
+		(math.random() * 2 - 1) * CFG.Jitter * 0.35,
+		(math.random() * 2 - 1) * CFG.Jitter)
+end
+
+-- the actual fling: massive angular velocity on our own assembly.
+-- With EVERY limb welded to the root this one assignment spins the whole
+-- body, and the tangential speed of the limbs is what launches the target.
+local function spinSelf(omega)
+	local root = selfRoot
+	if not root or not root.Parent then return end
+	pcall(function() root.AssemblyAngularVelocity = Vector3.new(0, omega, 0) end)
+	if W.fAll() then
+		for _, p in ipairs(selfParts) do
+			if p ~= root and p.Parent then
+				pcall(function() p.AssemblyAngularVelocity = Vector3.new(0, omega, 0) end)
+			end
+		end
+	end
+end
+
+local function stopSpin()
+	local root = selfRoot
+	if not root or not root.Parent then return end
+	pcall(function()
+		root.AssemblyAngularVelocity = Vector3.zero
+		root.AssemblyLinearVelocity = Vector3.zero
+	end)
+end
+
+-- our body becomes the blender: solid, heavy, optionally invisible
 local function prepareSelf(on)
 	if not selfRoot then return end
 	if on then
@@ -528,7 +583,9 @@ local function prepareSelf(on)
 			selfHum.Health = math.huge
 			freezeHumanoid(selfHum, true)
 		end
+		stopSpin()
 	else
+		stopSpin()
 		for _, p in ipairs(selfParts) do
 			local s = savedParts[p]
 			pcall(function()
@@ -542,10 +599,6 @@ local function prepareSelf(on)
 			selfHum.Health = math.min(savedHum.Health, savedHum.MaxHealth)
 			freezeHumanoid(selfHum, false)
 		end
-		if selfRoot then
-			selfRoot.AssemblyLinearVelocity = Vector3.zero
-			selfRoot.AssemblyAngularVelocity = Vector3.zero
-		end
 	end
 end
 
@@ -557,6 +610,7 @@ local function setStage(s)
 	F.pt = 0
 end
 
+-- read-only measurement of how far the target actually got thrown
 local function targetMetrics()
 	local r = F.tgtRoot
 	if not r or not r.Parent then return 0, 0 end
@@ -566,10 +620,10 @@ end
 abortFling = function(reason)
 	if not F.active then return end
 	F.active = false
+	stopSpin()
 	prepareSelf(false)
 	snapshotSelf()
-	F.target, F.tgtChar, F.tgtRoot, F.tgtHum = nil, nil, nil, nil
-	F.partList = {}
+	F.target, F.tgtChar, F.tgtRoot = nil, nil, nil
 	stage = STAGE.WINDUP
 	setStage(STAGE.WINDUP)
 	W.busy(false)
@@ -587,29 +641,27 @@ startFling = function()
 
 	local char = selPlayer.Character
 	local root  = char and char:FindFirstChild("HumanoidRootPart")
-	local hum   = char and char:FindFirstChildOfClass("Humanoid")
 	if not root then return W.say("target has no body", CLR.bad) end
 
 	F.active  = true
 	F.target  = selPlayer
 	F.tgtChar = char
 	F.tgtRoot = root
-	F.tgtHum  = hum
-	F.partList = partsOf(char)
-	F.pass, F.partIdx, F.attempt = 0, 1, 1
 	F.origin  = selfRoot.CFrame
 	F.seedPos = selfRoot.Position
 	F.ang     = math.random() * math.pi * 2
 	F.dir     = Vector3.new(math.cos(F.ang), 0, math.sin(F.ang))
+	F.spinSign = (CFG.SpinDir ~= 0) and CFG.SpinDir or (math.random() < 0.5 and -1 or 1)
+	F.attempt = 1
 	F.ms, F.md = 0, 0
 	prepareSelf(true)
 	setStage(STAGE.WINDUP)
 	W.busy(true)
-	W.say("flinging " .. selPlayer.DisplayName .. " ...", CLR.acc)
+	W.say("spinning " .. selPlayer.DisplayName .. " ...", CLR.acc)
 end
 
 --============================================================
--- 7. FLING STATE MACHINE
+-- 7. FLING STATE MACHINE  (local assembly only)
 --============================================================
 local function flingStep(dt)
 	if not F.active then return end
@@ -618,104 +670,71 @@ local function flingStep(dt)
 	if not F.target or not F.target.Parent then return abortFling("target left") end
 	F.pt = F.pt + dt
 
+	-- follow the target across respawns (read only - never modified)
 	local tr = F.tgtRoot
 	if not tr or not tr.Parent then
 		local c = F.target.Character
-		local r2, h2 = c and c:FindFirstChild("HumanoidRootPart"),
-			c and c:FindFirstChildOfClass("Humanoid")
+		local r2 = c and c:FindFirstChild("HumanoidRootPart")
 		if not r2 then return abortFling("target respawning") end
-		F.tgtChar, F.tgtRoot, F.tgtHum, tr = c, r2, h2, r2
-		F.partList = partsOf(c)
+		F.tgtChar, F.tgtRoot, tr = c, r2, r2
 	end
 
-	------------------------------------------------- WINDUP (orbit + drag)
+	------------------------------------------------- WINDUP (roam + spin up)
 	if stage == STAGE.WINDUP then
 		if not W.fRam() then return setStage(STAGE.LAUNCH) end
 
-		if F.pt < 0.30 then
-			local ring = tr.Position + Vector3.new(math.cos(F.ang) * CFG.RingRadius,
-			                                            CFG.RingHeight,
-			                                            math.sin(F.ang) * CFG.RingRadius)
-			root.CFrame = CFrame.new(ring)
-			root.AssemblyLinearVelocity = Vector3.zero
-		else
-			-- spin around them and reel them in
-			F.ang = F.ang + dt * 5.2
-			local pull = tr.Position - root.Position
-			if pull.Magnitude > 0.01 then pull = pull.Unit end
-			tr.AssemblyLinearVelocity = pull * (140 + 280 * F.pt) + Vector3.new(0, 30, 0)
-			root.CFrame = CFrame.lookAt(
-				tr.Position + Vector3.new(math.cos(F.ang) * 3.2, 1.4, math.sin(F.ang) * 3.2),
-				tr.Position)
-			for _, p in ipairs(F.partList) do pcall(function() p.CanCollide = false end) end
-		end
-		if F.pt >= CFG.SpinTime then
-			if W.fLaunch() then
-				for _, p in ipairs(F.partList) do pcall(function() p.CanCollide = true end) end
-			end
-			setStage(STAGE.RAM)
-		end
+		local k = math.min(F.pt / CFG.WindupTime, 1)
+		F.ang = F.ang + dt * (2.2 + 6.5 * k)
+		-- orbit collapses from RingRadius down into their bounding box
+		local r = CFG.RingRadius + (CFG.CloseRadius - CFG.RingRadius) * k
+		forcePos(root, tr.Position + Vector3.new(math.cos(F.ang) * r,
+			CFG.RingHeight * (1 - k * 0.75), math.sin(F.ang) * r), true)
+		-- wind the blender up while closing in
+		spinSelf(F.spinSign * CFG.SpinRamp * k)
 
-	------------------------------------------------- RAM (every limb charges)
+		if F.pt >= CFG.WindupTime then setStage(STAGE.RAM) end
+
+	------------------------------------------------- RAM (blender inside them)
 	elseif stage == STAGE.RAM then
-		if F.pt < 0.02 then
-			F.pass = F.pass + 1
-			-- line up behind the target, then punch through
-			root.CFrame = CFrame.lookAt(tr.Position - F.dir * 9 + Vector3.new(0, 1.2, 0),
-				tr.Position)
-			root.AssemblyLinearVelocity = Vector3.zero
-			-- ragdoll them so loose parts can change hands
-			pcall(function() F.tgtHum:ChangeState(Enum.HumanoidStateType.Ragdoll) end)
-			pcall(function() F.tgtHum:ChangeState(Enum.HumanoidStateType.Physics) end)
-			pcall(function() tr:SetNetworkOwner(PLR) end)
-			if W.fAll() then
-				for _, p in ipairs(selfParts) do
-					pcall(function() p.CanCollide = true; p.Massless = false end)
-				end
+		if F.pt < 0.02 and W.fAll() then
+			-- every limb solid and heavy so the whole body does the work
+			for _, p in ipairs(selfParts) do
+				pcall(function() p.CanCollide = true; p.Massless = false end)
 			end
 		end
-		-- rotate which of our own body parts leads the charge
-		local lead = selfParts[F.partIdx]
-		F.partIdx = (F.partIdx % math.max(#selfParts, 1)) + 1
-		local speed = CFG.RamSpeed * (1 + F.pass * CFG.RamGrowth)
-		local v = F.dir * speed + Vector3.new(0, speed * 0.12, 0)
-		root.AssemblyLinearVelocity = v
-		for _, p in ipairs(selfParts) do
-			pcall(function() p.AssemblyLinearVelocity = v end)
-		end
-		if lead and lead.Parent and W.fAll() then
-			pcall(function()
-				lead.AssemblyLinearVelocity = v * 1.15 + Vector3.new(0, 200, 0)
-			end)
-		end
-		if F.pt >= CFG.RamStep then
-			if F.pass >= CFG.RamPasses then setStage(STAGE.LAUNCH) else setStage(STAGE.RAM) end
-		end
+		-- sit inside their bounding box, spinning flat out
+		local j = jitter()
+		forcePos(root, tr.Position + j * 0.06, true)
+		root.AssemblyLinearVelocity = j
+		spinSelf(F.spinSign * CFG.SpinOmega)
 
-	------------------------------------------------- LAUNCH (max speed)
+		if F.pt >= CFG.SpinTime then setStage(STAGE.LAUNCH) end
+
+	------------------------------------------------- LAUNCH (carry them out)
 	elseif stage == STAGE.LAUNCH then
-		local ramp = math.min(F.pt / CFG.HoldTime, 1)
-		local sp = CFG.LaunchSpeed * (0.7 + 0.5 * ramp)
-		local vel = (F.dir + Vector3.new(0, CFG.UpBias, 0)).Unit * sp
-		for _, p in ipairs(F.partList) do
-			pcall(function()
-				p.AssemblyLinearVelocity = vel
-				p.AssemblyAngularVelocity = Vector3.new(math.random(-40, 40),
-					math.random(-40, 40), math.random(-40, 40))
-			end)
+		if not W.fLaunch() then
+			stopSpin()
+			return setStage(STAGE.RETURN)
 		end
-		pcall(function() tr.AssemblyLinearVelocity = vel end)
-		root.AssemblyLinearVelocity = F.dir * (CFG.LaunchSpeed * 0.9) + Vector3.new(0, 900, 0)
-		if F.pt >= CFG.HoldTime then setStage(STAGE.RETURN) end
+		local k = math.min(F.pt / CFG.LaunchTime, 1)
+		-- still spinning flat out while we drift outward, dragging them along
+		forcePos(root, tr.Position + F.dir * (CFG.CarryRadius * k)
+			+ Vector3.new(0, 1.5 * k, 0), true)
+		root.AssemblyLinearVelocity = F.dir * (CFG.CarryDrift * k) + jitter()
+		spinSelf(F.spinSign * CFG.SpinOmega)
+
+		if F.pt >= CFG.LaunchTime then
+			stopSpin()
+			setStage(STAGE.RETURN)
+		end
 
 	------------------------------------------------- RETURN (back to the spot)
 	elseif stage == STAGE.RETURN then
+		stopSpin()
 		if W.fReturn() and F.origin then
 			local k = math.min(F.pt / CFG.ReturnTime, 1)
 			local goal = F.origin.Position + Vector3.new(0, CFG.NavHeight, 0) * k
-			root.CFrame = CFrame.new(root.Position:Lerp(goal, math.min(dt * 16, 1)),
-				F.origin.Position)
-			root.AssemblyLinearVelocity = Vector3.zero
+			forcePos(root, root.Position:Lerp(goal, math.min(dt * 16, 1)), false)
 			if k >= 1 then
 				root.CFrame = F.origin
 				F.ms, F.md = targetMetrics()
@@ -741,6 +760,9 @@ local function flingStep(dt)
 		F.attempt = F.attempt + 1
 		F.ang = F.ang + 0.9
 		F.dir = Vector3.new(math.cos(F.ang), 0, math.sin(F.ang))
+		if CFG.SpinDir == 0 then
+			F.spinSign = math.random() < 0.5 and -1 or 1
+		end
 		W.say(string.format("retry %d/%d on %s", F.attempt, CFG.MaxAttempts, name), CLR.warn)
 		setStage(STAGE.WINDUP)
 	end
