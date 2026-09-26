@@ -22,31 +22,35 @@ local PGUI = PLR:WaitForChild("PlayerGui")
 local CFG = {
 	Hotkey      = Enum.KeyCode.F,   -- show / hide the mini window
 
-	RingRadius  = 12,               -- orbit start during the approach
-	RingHeight  = 3.5,
-	CloseRadius = 1.2,              -- how deep we sit inside their box
-	WindupTime  = 0.30,             -- short straight-line approach
+	ApproachTime = 0.12,            -- split second to line up before pass 1
+	StandOff     = 15,              -- how far behind them we set up each pass
 
-	SpinTime    = 1.50,             -- blender duration inside the target
-	LaunchTime  = 0.55,             -- carry-out while still spinning
-	SpinRate    = 48,               -- rad/s our own body is rotated by (CFrame sweep)
-	SpinOmega   = 999999,           -- rad/s pushed into AssemblyAngularVelocity
-	BobAmp      = 0.7,              -- vertical bob so the sweep covers their body
-	BobRate     = 42,
-	SpinDir     = 0,                -- 0 = randomise per attempt, +1 / -1 = fixed
-	Jitter      = 90,               -- subtle fluctuating linear speed
+	RamPasses    = 9,               -- number of straight-line rams
+	RamStep      = 0.17,            -- seconds of pure velocity per pass
+	RamSpeed     = 1500,            -- studs/s on the first pass
+	RamGrowth    = 320,             -- added per pass
+	MaxRamSpeed  = 3000,            -- hard cap (higher = tunnelling risk)
+	RamUpBias    = 0.30,            -- upward lean so they arc out of the map
+	PuntFrom     = 6,               -- passes from here on, launch skyward
+	PuntUpBias   = 1.30,
 
-	CarryRadius = 7,                -- radius we drift out to while carrying
-	CarryDrift  = 260,              -- our own outward drift while carrying
+	SpinOmega    = 999999,          -- rad/s on our own root (limb sweep)
+	SpinDir      = 0,               -- 0 = randomise per attempt, +1 / -1 = fixed
+	Jitter       = 40,              -- subtle fluctuating linear speed
 
-	ReturnTime  = 0.75,
-	NavHeight   = 40,               -- height used while flying back
+	StuckFactor  = 0.35,            -- speed under this % of command = we hit a wall
+	StuckFrames  = 5,               -- ...for this many frames -> cut the pass short
 
-	MaxAttempts = 3,                -- "try" count before giving up
-	SuccessSpeed= 260,
-	SuccessDist = 70,
-	NewWindow   = 20,               -- seconds a joiner shows as NEW
-	Ghost       = true,             -- hide own limbs while flinging
+	ReturnTime   = 0.70,            -- minimum return time
+	ReturnDiv    = 260,             -- return time scales with distance flown
+	ReturnMax    = 2.60,
+	NavHeight    = 40,              -- height used while flying back
+
+	MaxAttempts  = 3,               -- "try" count before giving up
+	SuccessSpeed = 260,
+	SuccessDist  = 70,
+	NewWindow    = 20,              -- seconds a joiner shows as NEW
+	Ghost        = true,            -- hide own limbs while flinging
 }
 
 local CLR = {
@@ -114,6 +118,14 @@ local F = {
 	ang      = 0,
 	spinSign = 1,
 	spinAngle = 0,      -- self-driven body rotation for the blender
+	pass     = 0,       -- which ram pass we are on
+	setup    = true,    -- next RAM frame does the setup teleport
+	stuck    = 0,       -- consecutive slow frames (we hit geometry)
+	lastPos  = nil,     -- last frame position, for the stuck check
+	ramDir   = Vector3.new(1, 0, 0),
+	ramFlat  = Vector3.new(1, 0, 0),
+	ramSpeed = 0,
+	retT     = CFG.ReturnTime,
 	origin   = nil,      -- the spot we let go from (we come back here)
 	seedPos  = nil,
 	ms, md   = 0, 0,     -- last measured target speed / distance
@@ -525,30 +537,19 @@ snapshotSelf = function()
 	end
 end
 
--- move our root to a point, keeping the physics-integrated rotation
-local function forcePos(part, pos, keepRot)
-	if keepRot then
+-- Teleport helper. Only ever used BETWEEN rams (when we are far away and
+-- touching nothing) or on the way home - never during a contact, because a
+-- CFrame write is a teleport and teleports transfer no momentum.
+local function place(part, pos, lookDir)
+	if lookDir and lookDir.Magnitude > 0.001 then
+		part.CFrame = CFrame.lookAt(pos, pos + lookDir)
+	else
 		local cf = part.CFrame
 		part.CFrame = CFrame.new(pos) * (cf - cf.Position)
-	else
-		part.CFrame = CFrame.new(pos, pos + F.dir)
 	end
 end
 
--- The blender placement. Writing CFrame alone resets AssemblyAngularVelocity,
--- so we advance the Y rotation OURSELVES and write that in - that is what the
--- collision solver actually sweeps, and it is what makes the limbs twist
--- through the target instead of the body just orbiting it.
-local function placeSpin(part, pos)
-	part.CFrame = CFrame.new(pos) * CFrame.Angles(0, F.spinAngle, 0)
-end
-
--- advance the self-driven body rotation (wrapped, so no float drift)
-local function advanceSpin(dt, rate)
-	F.spinAngle = (F.spinAngle + dt * rate) % (math.pi * 2)
-end
-
--- subtle fluctuating linear velocity, keeps the blender from settling
+-- subtle fluctuating linear velocity
 local function jitter()
 	return Vector3.new(
 		(math.random() * 2 - 1) * CFG.Jitter,
@@ -556,9 +557,8 @@ local function jitter()
 		(math.random() * 2 - 1) * CFG.Jitter)
 end
 
--- the actual fling: massive angular velocity on our own assembly.
--- With EVERY limb welded to the root this one assignment spins the whole
--- body, and the tangential speed of the limbs is what launches the target.
+-- Our body is the projectile. Every limb is welded to the root, so this one
+-- assignment spins the whole body and the limb tips sweep at omega * radius.
 local function spinSelf(omega)
 	local root = selfRoot
 	if not root or not root.Parent then return end
@@ -666,14 +666,18 @@ startFling = function()
 	F.seedPos = selfRoot.Position
 	F.ang     = math.random() * math.pi * 2
 	F.dir     = Vector3.new(math.cos(F.ang), 0, math.sin(F.ang))
+	F.ramFlat = F.dir
 	F.spinSign = (CFG.SpinDir ~= 0) and CFG.SpinDir or (math.random() < 0.5 and -1 or 1)
 	F.spinAngle = 0
+	F.pass, F.stuck, F.ramSpeed = 0, 0, 0
+	F.setup, F.lastPos = true, nil
+	F.retT = CFG.ReturnTime
 	F.attempt = 1
 	F.ms, F.md = 0, 0
 	prepareSelf(true)
 	setStage(STAGE.WINDUP)
 	W.busy(true)
-	W.say("spinning " .. selPlayer.DisplayName .. " ...", CLR.acc)
+	W.say("ramming " .. selPlayer.DisplayName .. " ...", CLR.acc)
 end
 
 --============================================================
@@ -695,56 +699,91 @@ local function flingStep(dt)
 		F.tgtChar, F.tgtRoot, tr = c, r2, r2
 	end
 
-	------------------------------------------------- WINDUP (short approach)
+	------------------------------------------------- WINDUP (split second)
 	if stage == STAGE.WINDUP then
 		if not W.fRam() then return setStage(STAGE.LAUNCH) end
+		-- jump in behind them so pass 1 connects almost immediately
+		local away = F.ramFlat
+		place(root, tr.Position - away * CFG.StandOff + Vector3.new(0, 1.5, 0), away)
+		root.AssemblyLinearVelocity = Vector3.zero
+		spinSelf(F.spinSign * CFG.SpinOmega)
+		if F.pt >= CFG.ApproachTime then setStage(STAGE.RAM) end
 
-		local k = math.min(F.pt / CFG.WindupTime, 1)
-		-- straight line in from the ring side, no lazy circling
-		local from = tr.Position + Vector3.new(math.cos(F.ang) * CFG.RingRadius,
-			CFG.RingHeight, math.sin(F.ang) * CFG.RingRadius)
-		local to   = tr.Position + Vector3.new(math.cos(F.ang) * CFG.CloseRadius, 0,
-			math.sin(F.ang) * CFG.CloseRadius)
-		forcePos(root, from:Lerp(to, k), false)
-		advanceSpin(dt, CFG.SpinRate * k)
-
-		if F.pt >= CFG.WindupTime then setStage(STAGE.RAM) end
-
-	------------------------------------------------- RAM (blender inside them)
+	------------------------------------------------- RAM (real momentum rams)
 	elseif stage == STAGE.RAM then
-		if F.pt < 0.02 and W.fAll() then
-			-- every limb solid and heavy so the whole body does the work
-			for _, p in ipairs(selfParts) do
-				pcall(function() p.CanCollide = true; p.Massless = false end)
+		if F.setup then
+			F.setup  = false
+			F.pass   = F.pass + 1
+			if W.fAll() then
+				for _, p in ipairs(selfParts) do
+					pcall(function() p.CanCollide = true; p.Massless = false end)
+				end
+			end
+			-- aim: always straight at where they are NOW
+			local aim = tr.Position - root.Position
+			local flat = Vector3.new(aim.X, 0, aim.Z)
+			if flat.Magnitude < 0.5 then flat = F.dir end
+			F.ramFlat = flat.Unit
+			-- later passes are skyward punts so they leave the map
+			local up = (F.pass >= CFG.PuntFrom) and CFG.PuntUpBias or CFG.RamUpBias
+			F.ramDir = (F.ramFlat + Vector3.new(0, up, 0)).Unit
+			F.ramSpeed = math.min(CFG.RamSpeed + (F.pass - 1) * CFG.RamGrowth,
+				CFG.MaxRamSpeed)
+			-- SETUP TELEPORT: we are StandOff studs away touching nothing,
+			-- so this transfers no momentum and costs us nothing
+			place(root, tr.Position - F.ramFlat * CFG.StandOff + Vector3.new(0, 1.5, 0),
+				F.ramFlat)
+			root.AssemblyLinearVelocity = Vector3.zero
+			F.lastPos = root.Position
+			F.stuck = 0
+			W.say(string.format("ramming %s  %d/%d  @ %d studs/s",
+				F.target.DisplayName, F.pass, CFG.RamPasses, F.ramSpeed), CLR.acc)
+		else
+			-- >>> THE RAM: no CFrame writes at all, velocity only <<<
+			-- re-pinning the velocity every frame is what keeps us at full
+			-- speed, and a sustained real velocity is what the solver turns
+			-- into a real impulse on the target.
+			root.AssemblyLinearVelocity = F.ramDir * F.ramSpeed + jitter()
+			spinSelf(F.spinSign * CFG.SpinOmega)
+
+			-- did we actually travel, or did we slam into geometry?
+			if F.lastPos then
+				local moved = (root.Position - F.lastPos).Magnitude
+				if moved < F.ramSpeed * dt * CFG.StuckFactor then
+					F.stuck = F.stuck + 1
+				else
+					F.stuck = 0
+				end
+			end
+			F.lastPos = root.Position
+		end
+
+		-- next pass, or wrap up
+		if F.pt >= CFG.RamStep or F.stuck >= CFG.StuckFrames then
+			F.stuck = 0
+			if F.pass >= CFG.RamPasses then
+				stopSpin()
+				local far = (root.Position - F.origin.Position).Magnitude
+				F.retT = math.clamp(far / CFG.ReturnDiv, CFG.ReturnTime, CFG.ReturnMax)
+				setStage(STAGE.RETURN)
+			else
+				setStage(STAGE.RAM)   -- resets F.pt -> new setup teleport
+				F.setup = true
 			end
 		end
 
-		advanceSpin(dt, CFG.SpinRate)
-		-- locked inside their bounding box, twisting at full rate
-		local bob = math.sin(F.pt * CFG.BobRate) * CFG.BobAmp
-		local j   = jitter()
-		placeSpin(root, tr.Position + Vector3.new(0, bob, 0) + j * 0.05)
-		root.AssemblyLinearVelocity = j
-		spinSelf(F.spinSign * CFG.SpinOmega)
-
-		if F.pt >= CFG.SpinTime then setStage(STAGE.LAUNCH) end
-
-	------------------------------------------------- LAUNCH (carry them out)
+	------------------------------------------------- LAUNCH (final skyward punt)
 	elseif stage == STAGE.LAUNCH then
-		if not W.fLaunch() then
-			stopSpin()
-			return setStage(STAGE.RETURN)
-		end
-		local k = math.min(F.pt / CFG.LaunchTime, 1)
-		-- still twisting flat out while we drift outward, dragging them along
-		advanceSpin(dt, CFG.SpinRate)
-		placeSpin(root, tr.Position + F.dir * (CFG.CarryRadius * k)
-			+ Vector3.new(0, 1.5 * k, 0))
-		root.AssemblyLinearVelocity = F.dir * (CFG.CarryDrift * k) + jitter()
+		-- RAM was switched off, so deliver one clean straight ram instead
+		local k = math.min(F.pt / 0.30, 1)
+		local up = (F.pass >= CFG.PuntFrom) and CFG.PuntUpBias or CFG.RamUpBias
+		F.ramDir = (F.ramFlat + Vector3.new(0, up, 0)).Unit
+		root.AssemblyLinearVelocity = F.ramDir * (CFG.RamSpeed * 2.4) + jitter()
 		spinSelf(F.spinSign * CFG.SpinOmega)
-
-		if F.pt >= CFG.LaunchTime then
+		if k >= 1 then
 			stopSpin()
+			local far = (root.Position - F.origin.Position).Magnitude
+			F.retT = math.clamp(far / CFG.ReturnDiv, CFG.ReturnTime, CFG.ReturnMax)
 			setStage(STAGE.RETURN)
 		end
 
@@ -752,9 +791,9 @@ local function flingStep(dt)
 	elseif stage == STAGE.RETURN then
 		stopSpin()
 		if W.fReturn() and F.origin then
-			local k = math.min(F.pt / CFG.ReturnTime, 1)
+			local k = math.min(F.pt / F.retT, 1)
 			local goal = F.origin.Position + Vector3.new(0, CFG.NavHeight, 0) * k
-			forcePos(root, root.Position:Lerp(goal, math.min(dt * 16, 1)), false)
+			place(root, root.Position:Lerp(goal, math.min(dt * 14, 1)), nil)
 			if k >= 1 then
 				root.CFrame = F.origin
 				F.ms, F.md = targetMetrics()
@@ -784,6 +823,9 @@ local function flingStep(dt)
 			F.spinSign = math.random() < 0.5 and -1 or 1
 		end
 		F.spinAngle = 0
+		F.pass, F.stuck = 0, 0
+		F.setup, F.lastPos = true, nil
+		F.ramFlat = F.dir
 		W.say(string.format("retry %d/%d on %s", F.attempt, CFG.MaxAttempts, name), CLR.warn)
 		setStage(STAGE.WINDUP)
 	end
