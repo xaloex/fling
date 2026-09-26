@@ -24,22 +24,31 @@ local CFG = {
 	Hotkey      = Enum.KeyCode.F,   -- show / hide the mini window
 
 	ApproachTime = 0.05,            -- split second to close in before the spin
-	SpinTime     = 1.50,            -- glued tumble duration
-	Leash        = 60,              -- let go once they are this far from the start
+	SpinTime     = 1.80,            -- glued tumble duration
+	Leash        = 90,              -- let go once they are this far from the start
 	                             -- (stops us being dragged off the map with them)
+
+	-- SUSTAINED DRIVE. The tumble alone only grazes them for a few ms before
+	-- the solver shoves us apart. Holding a forward shove into them for the
+	-- whole spin is what actually builds into a launch.
+	DriveSpeed   = 700,             -- forward studs/s into the target
+	DriveRamp    = 1.6,             -- DriveSpeed multiplier by the end of the spin
+	PopUp        = 1400,            -- last-frame upward kick that sends them out
 
 	-- 3-AXIS tumble. Single-axis spin just parts them aside; all three
 	-- axes at once grinds the body into the target from every angle.
-	TumbleX      = 10000,
-	TumbleY      = 9999,
-	TumbleZ      = -9999,
+	TumbleX      = 16000,
+	TumbleY      = 15999,
+	TumbleZ      = -15999,
 	SpinDir      = 0,               -- 0 = randomise per attempt, +1 / -1 = fixed
 
 	-- small, mostly-upward linear push. Keep this LOW: a big value makes
 	-- the solver eject YOU instead of launching them.
-	LaunchUp     = 520,
+	LaunchUp     = 400,
 	LateralPush  = 25,
 	Jitter       = 5,               -- position jitter, so we are not dead-centre
+
+	AllDelay     = 0.70,            -- seconds between players in FLING ALL
 
 	VoidY        = -150,            -- below this we fell out: go home immediately
 	ReturnSnap   = 140,             -- further than this from home -> teleport
@@ -130,6 +139,7 @@ local W   = {}        -- gui widgets + gui functions
 local rows = {}       -- built row widgets, keyed by userId
 
 local ago, sortedRecords, selectPlayer, snapshotSelf, abortFling, startFling
+local queueOn, queueStart, queueStep
 
 --============================================================
 -- 4. GUI  (mini, draggable, collapsible)
@@ -142,7 +152,7 @@ local function buildGUI()
 
 	local main = mk("Frame", {
 		Name = "Main", AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(300, 392),
+		Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(300, 428),
 		BackgroundColor3 = CLR.bg, BorderSizePixel = 0, Active = true,
 	}, screen)
 	round(main, 12); outline(main, CLR.line, 1)
@@ -257,6 +267,19 @@ local function buildGUI()
 	round(fling, 8)
 	fling.LayoutOrder = 2
 	W.fling = fling
+
+	local act2 = mk("Frame", { BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, 30) }, body)
+	act2.LayoutOrder = 5
+
+	local flingAll = mk("TextButton", {
+		BackgroundColor3 = CLR.card, BorderSizePixel = 0, Size = UDim2.new(1, 0, 1, 0),
+		Text = "FLING ALL", TextSize = 13, Font = Enum.Font.GothamBold,
+		TextColor3 = CLR.warn,
+	}, act2)
+	round(flingAll, 8)
+	outline(flingAll, CLR.line, 1)
+	W.flingAll = flingAll
 
 	---------------- drag ----------------
 	local drag, dragStart, startPos = false, nil, nil
@@ -391,8 +414,15 @@ local function buildGUI()
 			W.say("nobody to fling", CLR.warn)
 		end
 	end)
-	stop.MouseButton1Click:Connect(function() abortFling("stopped") end)
-	fling.MouseButton1Click:Connect(function() startFling() end)
+	stop.MouseButton1Click:Connect(function()
+		queueOn = false
+		abortFling("stopped")
+	end)
+	fling.MouseButton1Click:Connect(function()
+		queueOn = false
+		startFling()
+	end)
+	flingAll.MouseButton1Click:Connect(function() queueStart() end)
 end
 
 --============================================================
@@ -643,6 +673,55 @@ local function goHome()
 	setStage(STAGE.RETURN)
 end
 
+--============================================================
+-- FLING ALL - queue every other player, one after another
+--============================================================
+local queue, queueAt = {}, 0
+
+queueStart = function()
+	if F.active then return W.say("busy - stop first", CLR.warn) end
+	queue = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= PLR and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+			table.insert(queue, p.UserId)
+		end
+	end
+	if #queue == 0 then return W.say("nobody to fling", CLR.warn) end
+	queueOn = true
+	queueAt = 0
+	W.say(string.format("fling all: %d queued", #queue), CLR.warn)
+end
+
+queueStep = function()
+	if not queueOn or F.active then return end
+	if #queue == 0 then
+		queueOn = false
+		W.say("fling all done", CLR.good)
+		return
+	end
+	if os.clock() < queueAt then return end
+
+	-- pull the next player who is still here with a body
+	local uid
+	while #queue > 0 do
+		local u = table.remove(queue, 1)
+		local rec = Registry[u]
+		if rec and rec.player and rec.player.Parent and rec.player.Character
+			and rec.player.Character:FindFirstChild("HumanoidRootPart") then
+			uid = u
+			break
+		end
+	end
+	if not uid then
+		queueOn = false
+		return W.say("fling all done", CLR.good)
+	end
+
+	selectPlayer(uid)
+	startFling()
+	queueAt = os.clock() + CFG.AllDelay
+end
+
 abortFling = function(reason)
 	if not F.active then return end
 	F.active = false
@@ -654,6 +733,8 @@ abortFling = function(reason)
 	setStage(STAGE.WINDUP)
 	W.busy(false)
 	W.say(reason, CLR.dim)
+	-- FLING ALL: keep going with the next one
+	if queueOn then queueAt = os.clock() + CFG.AllDelay end
 end
 
 startFling = function()
@@ -729,26 +810,42 @@ local function flingStep(dt)
 		-- 2) TUMBLE: all three axes, this is what grinds them outward
 		tumbleSelf(F.spinSign)
 
-		-- 3) small, mostly-upward push. Keep LOW - a big value makes the
-		--    solver eject us instead of launching them.
-		root.AssemblyLinearVelocity = F.dir * CFG.LateralPush
+		-- 3) SUSTAINED DRIVE: hold a forward shove for the WHOLE spin, and
+		--    ramp it. This is what turns a few ms of contact into a launch -
+		--    the tumble alone just grazes them before we get pushed apart.
+		local k = math.min(F.pt / CFG.SpinTime, 1)
+		local drive = CFG.DriveSpeed * (1 + CFG.DriveRamp * k)
+		root.AssemblyLinearVelocity = F.dir * drive
 			+ Vector3.new(0, CFG.LaunchUp, 0)
+
+		-- time is up: one last deep contact with a big upward kick. This
+		-- single frame is the pop that actually sends them off the map.
+		if F.pt >= CFG.SpinTime then
+			pinTo(root, tr.Position)
+			tumbleSelf(F.spinSign)
+			root.AssemblyLinearVelocity = F.dir * (CFG.DriveSpeed * 2)
+				+ Vector3.new(0, CFG.PopUp, 0)
+			return goHome()
+		end
 
 		-- LEASH: once they are properly launched, let go. If we stay glued
 		-- we get dragged off the map with them and die on the way home.
 		if (tr.Position - F.seedPos).Magnitude > CFG.Leash then
+			pinTo(root, tr.Position)
+			tumbleSelf(F.spinSign)
+			root.AssemblyLinearVelocity = F.dir * (CFG.DriveSpeed * 2)
+				+ Vector3.new(0, CFG.PopUp, 0)
 			return goHome()
 		end
-		if F.pt >= CFG.SpinTime then return goHome() end
 
 	------------------------------------------------- LAUNCH (RAM off: one pop)
 	elseif stage == STAGE.LAUNCH then
 		controlSelf(true)
 		pinTo(root, tr.Position)
 		tumbleSelf(F.spinSign)
-		local power = W.fLaunch() and 3.2 or 1
-		root.AssemblyLinearVelocity = F.dir * (CFG.LateralPush * power)
-			+ Vector3.new(0, CFG.LaunchUp * power, 0)
+		local power = W.fLaunch() and 2.5 or 1
+		root.AssemblyLinearVelocity = F.dir * (CFG.DriveSpeed * power)
+			+ Vector3.new(0, CFG.PopUp * power, 0)
 		goHome()
 
 	------------------------------------------------- RETURN
@@ -819,6 +916,7 @@ RunService.Heartbeat:Connect(flingStep)
 
 local paintAt = 0
 RunService.RenderStepped:Connect(function()
+	queueStep()
 	local now = os.clock()
 	if now - paintAt < 0.2 then return end
 	paintAt = now
