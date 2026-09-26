@@ -23,23 +23,25 @@ local CFG = {
 	Hotkey      = Enum.KeyCode.F,   -- show / hide the mini window
 
 	ApproachTime = 0.12,            -- split second to line up before pass 1
-	StandOff     = 15,              -- how far behind them we set up each pass
+	StandOff     = 4,               -- setup gap: our limbs start already inside them
+	PinOffset    = 0.8,             -- how far behind their root we stay glued
 
-	RamPasses    = 9,               -- number of straight-line rams
-	RamStep      = 0.17,            -- seconds of pure velocity per pass
-	RamSpeed     = 1500,            -- studs/s on the first pass
-	RamGrowth    = 320,             -- added per pass
-	MaxRamSpeed  = 3000,            -- hard cap (higher = tunnelling risk)
-	RamUpBias    = 0.30,            -- upward lean so they arc out of the map
+	RamPasses    = 10,              -- number of rammed passes
+	RamStep      = 0.17,            -- seconds of glued drive per pass
+	RamSpeed     = 1200,            -- commanded studs/s
+	RamGrowth    = 250,             -- added per pass
+	MaxRamSpeed  = 2400,            -- hard cap
+	RamUpBias    = 0.25,            -- upward lean so they arc out of the map
 	PuntFrom     = 6,               -- passes from here on, launch skyward
-	PuntUpBias   = 1.30,
+	PuntUpBias   = 1.20,
 
 	SpinOmega    = 999999,          -- rad/s on our own root (limb sweep)
 	SpinDir      = 0,               -- 0 = randomise per attempt, +1 / -1 = fixed
 	Jitter       = 40,              -- subtle fluctuating linear speed
 
-	StuckFactor  = 0.35,            -- speed under this % of command = we hit a wall
-	StuckFrames  = 5,               -- ...for this many frames -> cut the pass short
+	VoidY        = -120,            -- below this we have fallen out: go home
+	StuckFactor  = 0.35,            -- speed under this % of command = blocked
+	StuckFrames  = 6,               -- ...for this many frames -> cut the pass short
 
 	ReturnTime   = 0.70,            -- minimum return time
 	ReturnDiv    = 260,             -- return time scales with distance flown
@@ -120,8 +122,7 @@ local F = {
 	spinAngle = 0,      -- self-driven body rotation for the blender
 	pass     = 0,       -- which ram pass we are on
 	setup    = true,    -- next RAM frame does the setup teleport
-	stuck    = 0,       -- consecutive slow frames (we hit geometry)
-	lastPos  = nil,     -- last frame position, for the stuck check
+	stuck    = 0,       -- consecutive blocked frames (geometry in the way)
 	ramDir   = Vector3.new(1, 0, 0),
 	ramFlat  = Vector3.new(1, 0, 0),
 	ramSpeed = 0,
@@ -524,6 +525,7 @@ snapshotSelf = function()
 			JumpHeight = selfHum.JumpHeight, UseJumpPower = selfHum.UseJumpPower,
 			AutoRotate = selfHum.AutoRotate, MaxHealth = selfHum.MaxHealth,
 			Health = selfHum.Health, PlatformStand = selfHum.PlatformStand,
+			BreakJointsOnDeath = selfHum.BreakJointsOnDeath,
 		}
 	end
 	if selfRoot then savedRoot = { Transparency = selfRoot.Transparency } end
@@ -547,6 +549,15 @@ local function place(part, pos, lookDir)
 		local cf = part.CFrame
 		part.CFrame = CFrame.new(pos) * (cf - cf.Position)
 	end
+end
+
+-- Glue our root onto a moving point WITHOUT touching the rotation.
+-- The rotation read-back is whatever the physics engine produced from our
+-- angular velocity, so the spin survives, and forcing the position is what
+-- keeps our body inside the target instead of rocketing past them.
+local function pinTo(part, pos)
+	local cf = part.CFrame
+	part.CFrame = CFrame.new(pos) * (cf - cf.Position)
 end
 
 -- subtle fluctuating linear velocity
@@ -594,8 +605,9 @@ local function prepareSelf(on)
 			end)
 		end
 		if selfHum then
-			selfHum.MaxHealth = math.huge
-			selfHum.Health = math.huge
+			selfHum.MaxHealth = 1e9
+			selfHum.Health = 1e9
+			selfHum.BreakJointsOnDeath = false
 			freezeHumanoid(selfHum, true)
 		end
 		stopSpin()
@@ -612,8 +624,19 @@ local function prepareSelf(on)
 		if selfHum and savedHum then
 			selfHum.MaxHealth = savedHum.MaxHealth
 			selfHum.Health = math.min(savedHum.Health, savedHum.MaxHealth)
+			selfHum.BreakJointsOnDeath = savedHum.BreakJointsOnDeath
 			freezeHumanoid(selfHum, false)
 		end
+	end
+end
+
+-- we ram at silly speeds, so keep topping ourselves up and never die
+local function keepAlive()
+	local hum = selfHum
+	if hum and hum.Parent then
+		hum.MaxHealth = 1e9
+		if hum.Health < 1e8 then hum.Health = 1e9 end
+		hum.BreakJointsOnDeath = false
 	end
 end
 
@@ -670,7 +693,7 @@ startFling = function()
 	F.spinSign = (CFG.SpinDir ~= 0) and CFG.SpinDir or (math.random() < 0.5 and -1 or 1)
 	F.spinAngle = 0
 	F.pass, F.stuck, F.ramSpeed = 0, 0, 0
-	F.setup, F.lastPos = true, nil
+	F.setup = true
 	F.retT = CFG.ReturnTime
 	F.attempt = 1
 	F.ms, F.md = 0, 0
@@ -689,6 +712,17 @@ local function flingStep(dt)
 	if not root or not root.Parent then return abortFling("character reset") end
 	if not F.target or not F.target.Parent then return abortFling("target left") end
 	F.pt = F.pt + dt
+
+	-- ramming at silly speeds hurts: stay alive no matter what
+	keepAlive()
+
+	-- safety net: if we ourselves fell out of the world, stop and go home
+	if root.Position.Y < CFG.VoidY then
+		stopSpin()
+		local far = (root.Position - F.origin.Position).Magnitude
+		F.retT = math.clamp(far / CFG.ReturnDiv, CFG.ReturnTime, CFG.ReturnMax)
+		return setStage(STAGE.RETURN)
+	end
 
 	-- follow the target across respawns (read only - never modified)
 	local tr = F.tgtRoot
@@ -709,7 +743,7 @@ local function flingStep(dt)
 		spinSelf(F.spinSign * CFG.SpinOmega)
 		if F.pt >= CFG.ApproachTime then setStage(STAGE.RAM) end
 
-	------------------------------------------------- RAM (real momentum rams)
+	------------------------------------------------- RAM (glued + driven)
 	elseif stage == STAGE.RAM then
 		if F.setup then
 			F.setup  = false
@@ -725,37 +759,36 @@ local function flingStep(dt)
 			if flat.Magnitude < 0.5 then flat = F.dir end
 			F.ramFlat = flat.Unit
 			-- later passes are skyward punts so they leave the map
+			-- (never negative - we must not ram ourselves into the void)
 			local up = (F.pass >= CFG.PuntFrom) and CFG.PuntUpBias or CFG.RamUpBias
-			F.ramDir = (F.ramFlat + Vector3.new(0, up, 0)).Unit
+			F.ramDir = (F.ramFlat + Vector3.new(0, math.max(0, up), 0)).Unit
 			F.ramSpeed = math.min(CFG.RamSpeed + (F.pass - 1) * CFG.RamGrowth,
 				CFG.MaxRamSpeed)
-			-- SETUP TELEPORT: we are StandOff studs away touching nothing,
-			-- so this transfers no momentum and costs us nothing
-			place(root, tr.Position - F.ramFlat * CFG.StandOff + Vector3.new(0, 1.5, 0),
+			-- setup teleport: our limbs start already inside their box
+			place(root, tr.Position - F.ramFlat * CFG.StandOff + Vector3.new(0, 0.3, 0),
 				F.ramFlat)
 			root.AssemblyLinearVelocity = Vector3.zero
-			F.lastPos = root.Position
 			F.stuck = 0
 			W.say(string.format("ramming %s  %d/%d  @ %d studs/s",
 				F.target.DisplayName, F.pass, CFG.RamPasses, F.ramSpeed), CLR.acc)
 		else
-			-- >>> THE RAM: no CFrame writes at all, velocity only <<<
-			-- re-pinning the velocity every frame is what keeps us at full
-			-- speed, and a sustained real velocity is what the solver turns
-			-- into a real impulse on the target.
-			root.AssemblyLinearVelocity = F.ramDir * F.ramSpeed + jitter()
-			spinSelf(F.spinSign * CFG.SpinOmega)
-
-			-- did we actually travel, or did we slam into geometry?
-			if F.lastPos then
-				local moved = (root.Position - F.lastPos).Magnitude
-				if moved < F.ramSpeed * dt * CFG.StuckFactor then
+			-- what the physics gave us last step, BEFORE we overwrite it:
+			-- if it is far under command then geometry is blocking us
+			if F.pt > 0.05 then
+				if root.AssemblyLinearVelocity.Magnitude < F.ramSpeed * CFG.StuckFactor then
 					F.stuck = F.stuck + 1
 				else
 					F.stuck = 0
 				end
 			end
-			F.lastPos = root.Position
+
+			-- 1) GLUE: stay inside their body, following them around
+			pinTo(root, tr.Position - F.ramFlat * CFG.PinOffset + Vector3.new(0, 0.3, 0))
+			-- 2) DRIVE: a real, sustained velocity is what the solver turns
+			--    into a real impulse - this is the part that actually throws
+			root.AssemblyLinearVelocity = F.ramDir * F.ramSpeed + jitter()
+			-- 3) SPIN: limbs sweep at omega * radius, extra contact events
+			spinSelf(F.spinSign * CFG.SpinOmega)
 		end
 
 		-- next pass, or wrap up
@@ -777,7 +810,8 @@ local function flingStep(dt)
 		-- RAM was switched off, so deliver one clean straight ram instead
 		local k = math.min(F.pt / 0.30, 1)
 		local up = (F.pass >= CFG.PuntFrom) and CFG.PuntUpBias or CFG.RamUpBias
-		F.ramDir = (F.ramFlat + Vector3.new(0, up, 0)).Unit
+		F.ramDir = (F.ramFlat + Vector3.new(0, math.max(0, up), 0)).Unit
+		pinTo(root, tr.Position - F.ramFlat * CFG.PinOffset + Vector3.new(0, 0.3, 0))
 		root.AssemblyLinearVelocity = F.ramDir * (CFG.RamSpeed * 2.4) + jitter()
 		spinSelf(F.spinSign * CFG.SpinOmega)
 		if k >= 1 then
@@ -824,7 +858,7 @@ local function flingStep(dt)
 		end
 		F.spinAngle = 0
 		F.pass, F.stuck = 0, 0
-		F.setup, F.lastPos = true, nil
+		F.setup = true
 		F.ramFlat = F.dir
 		W.say(string.format("retry %d/%d on %s", F.attempt, CFG.MaxAttempts, name), CLR.warn)
 		setStage(STAGE.WINDUP)
