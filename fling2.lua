@@ -1,10 +1,14 @@
 --[[═══════════════════════════════════════════════════════════════════════
-    FLING GUI v1 — флинг игроками всеми частями тела (Delta / Solara / Wave)
+    FLING GUI v2 — спин-флинг игроком (Delta / Solara / Wave)
     ─────────────────────────────────────────────────────────────────────────
-    • Мини-окно: перетаскивается мышкой/пальцем, кнопка _
+    • Мини-окно: перетаскивается мышкой/пальцем, кнопка _ сворачивает
     • Список игроков ЖИВОЙ: сам добавляет кто зашёл, сам убирает кто вышел
-    • Кнопка FLING: все части твоего тела отвязываются (anchored-головокружение)
-      и с МАКСИМАЛЬНОЙ скоростью летят в цель — жёсткий флинг
+    • Кнопка FLING: современный спин-флинг —
+        – удерживает твой HumanoidRootPart внутри хитбокса цели (Stepped + jitter)
+        – CanCollide = true, Massless = false на все части тела
+        – AssemblyAngularVelocity = 999999 (гигантское вращение)
+        – AssemblyLinearVelocity — хаотичный подброс
+      Работает под FilteringEnabled, старые BodyVelocity не используются
     • После флинга тебя возвращает на место, откуда ты его пинал
     • Вставить в Delta → Execute
     ═══════════════════════════════════════════════════════════════════════]]
@@ -19,11 +23,11 @@ local LP = Players.LocalPlayer
 
 --════════════════════ НАСТРОЙКИ ══════════════════
 local CONFIG = {
-    SPIN_POWER      = 50000,  -- сила подкрутки тела (больше = злее)
-    VELOCITY_POWER  = 9000,   -- мощность Velocity-частиц
-    FLING_TIME      = 2.2,    -- сколько секунд длится флинг
-    RETURN_TIME     = 0.8,    -- время возврата на исходную точку
-    GUI_SIZE        = UDim2.new(0, 210, 0, 250),
+    SPIN_SPEED   = 999999,                          -- угловая скорость вращения (Y-ось)
+    BOUNCE_POWER = 100,                             -- вертикальный подброс + хаотичный разброс
+    JITTER       = 2,                               -- радиус микро-сдвига внутри хитбокса (студы)
+    FLING_TIME   = 2.2,                             -- сколько секунд длится флинг
+    GUI_SIZE     = UDim2.new(0, 210, 0, 250),
 }
 
 --════════════════════ GUI ════════════════════════
@@ -260,7 +264,7 @@ CloseBtn.MouseButton1Click:Connect(function()
     Main.Visible = not Main.Visible
 end)
 
---════════════════════ ФЛИНГ ════════════════════
+--════════════════════ ФЛИНГ (SPIN-FLING) ════════════════════
 local flinging = false
 
 local function getRootChar()
@@ -293,60 +297,65 @@ FlingBtn.MouseButton1Click:Connect(function()
     -- целевой игрок (следим за ним в реальном времени)
     local target = selectedPlayer
 
-    -- 1) отключаем контроль персонажа, чтобы физику не рвал движок
+    -- 1) отключаем контроль персонажа, чтобы движок не мешал вращению
     hum:ChangeState(Enum.HumanoidStateType.Physics)
     hum.PlatformStand = true
 
-    -- 2) собираем ВСЕ части тела
-    local parts = {}
+    -- 2) включаем коллизии на ВСЕХ частях тела (сохраняем исходные значения)
+    local savedParts = {}
     for _, p in ipairs(char:GetDescendants()) do
         if p:IsA("BasePart") then
-            table.insert(parts, p)
+            savedParts[p] = { canCollide = p.CanCollide, massless = p.Massless }
+            p.CanCollide = true
+            p.Massless = false
         end
     end
 
-    -- 3) каждая часть получает огромную скорость в цель
-    local spin = Instance.new("BodyAngularVelocity")
-    spin.AngularVelocity = Vector3.new(CONFIG.SPIN_POWER, CONFIG.SPIN_POWER, CONFIG.SPIN_POWER)
-    spin.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-    spin.P = math.huge
-    spin.Parent = hrp
-
-    local movers = {}
+    -- 3) спин-флинг: держим себя внутри хитбокса цели + гигантское вращение
     local conn
-    conn = RunService.Heartbeat:Connect(function()
-        -- живая цель
+    conn = RunService.Stepped:Connect(function()
+        -- персонаж умер/исчез — ничего не делаем
+        if not hrp.Parent or hum.Health <= 0 then return end
+
+        -- живая цель: телепортируем себя в её хитбокс с микро-сдвигом (jitter),
+        -- чтобы не залипнуть в коллизии
         local tChar = target and target.Character
         local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
-        if not tRoot or not target.Parent then return end
-
-        for _, p in ipairs(parts) do
-            if p.Parent then
-                local dir = (tRoot.Position - p.Position)
-                if dir.Magnitude < 0.01 then dir = Vector3.new(0, 1, 0) end
-                dir = dir.Unit
-
-                local v = p:FindFirstChild("FlingVel")
-                if not v then
-                    v = Instance.new("BodyVelocity")
-                    v.Name = "FlingVel"
-                    v.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-                    v.Parent = p
-                    table.insert(movers, v)
-                end
-                v.Velocity = dir * CONFIG.VELOCITY_POWER
-            end
+        if tRoot and target.Parent then
+            local j = CONFIG.JITTER
+            local offset = Vector3.new(
+                (math.random() - 0.5) * 2 * j,
+                (math.random() - 0.5) * 2 * j,
+                (math.random() - 0.5) * 2 * j
+            )
+            hrp.CFrame = tRoot.CFrame * CFrame.new(offset)
         end
+
+        -- гигантская угловая скорость вращения
+        hrp.AssemblyAngularVelocity = Vector3.new(0, CONFIG.SPIN_SPEED, 0)
+
+        -- хаотичная линейная скорость: подброс вверх + разброс по осям
+        hrp.AssemblyLinearVelocity = Vector3.new(
+            math.random(-CONFIG.BOUNCE_POWER, CONFIG.BOUNCE_POWER),
+            CONFIG.BOUNCE_POWER,
+            math.random(-CONFIG.BOUNCE_POWER, CONFIG.BOUNCE_POWER)
+        )
     end)
 
     task.wait(CONFIG.FLING_TIME)
 
-    -- 4) чистим и возвращаемся на исходную точку
+    -- 4) полная остановка: сброс скоростей
     if conn then conn:Disconnect() end
-    for _, v in ipairs(movers) do
-        if v then v:Destroy() end
+    hrp.AssemblyAngularVelocity = Vector3.zero
+    hrp.AssemblyLinearVelocity = Vector3.zero
+
+    -- восстанавливаем исходные коллизии и Massless
+    for p, saved in pairs(savedParts) do
+        if p and p.Parent then
+            p.CanCollide = saved.canCollide
+            p.Massless = saved.massless
+        end
     end
-    spin:Destroy()
 
     -- если за время флинга персонаж умер — просто сбрасываем состояние
     if not hrp.Parent or not char.Parent or hum.Health <= 0 then
@@ -355,7 +364,7 @@ FlingBtn.MouseButton1Click:Connect(function()
         return
     end
 
-    -- телепорт обратно + мягкий твин для плавности
+    -- телепорт обратно на точку флинга
     hrp.Anchored = true
     hrp.CFrame = startPos
     task.wait(0.05)
@@ -376,4 +385,4 @@ LP.CharacterAdded:Connect(function()
     updateStatus()
 end)
 
-print("[FlingGui] Загружен. Выбери игрока и жми FLING 💥")
+print("[FlingGui v2] Загружен. Выбери игрока и жми FLING 💥")
