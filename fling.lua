@@ -1,6 +1,6 @@
 --[[
 	============================================================
-	 FLING RIG  -  ONE FILE, CLIENT SIDE ONLY
+	 FLING RIG2  -  ONE FILE, CLIENT SIDE ONLY
 	 No RemoteEvents. No server Scripts. Paste once and play.
 	 Physics: Humanoid Physics state + glued CFrame + 3-AXIS
 	          tumble (AssemblyAngularVelocity on X/Y/Z) with a
