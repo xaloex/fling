@@ -1,6 +1,6 @@
 --[[
 	============================================================
-	 FLING RIG2  -  ONE FILE, CLIENT SIDE ONLY
+	 FLING RIG  -  ONE FILE, CLIENT SIDE ONLY
 	 No RemoteEvents. No server Scripts. Paste once and play.
 	 Physics: Humanoid Physics state + glued CFrame + 3-AXIS
 	          tumble (AssemblyAngularVelocity on X/Y/Z) with a
@@ -25,16 +25,16 @@ local CFG = {
 
 	ApproachTime = 0.05,            -- split second to line up before a punch
 	StandOff     = 3,               -- start the pass ALREADY touching them
-	Punches      = 5,               -- ram passes per fling
+	Punches      = 7,               -- ram passes per fling
 	PunchStep    = 0.11,            -- seconds of ram per pass
-	ReleaseTime  = 0.06,            -- zero-velocity window that resolves the overlap
-	RamSpeed     = 1400,            -- drive speed straight through them
-	RamRamp      = 300,             -- added per punch
-	MaxRamSpeed  = 2600,            -- hard cap
-	RamUp        = 150,             -- slight lift while passing through
-	PopUp        = 1300,            -- upward kick on the release frame
-	ReleaseBack  = 140,             -- gentle back-off so the kick lands on THEM
-	Leash        = 150,             -- let go once they are this far from the start
+	ReleaseTime  = 0.05,            -- one frame to deliver the kick
+	RamSpeed     = 2000,            -- drive speed straight through them
+	RamRamp      = 400,             -- added per punch
+	MaxRamSpeed  = 4200,            -- hard cap on the ram
+	RamUp        = 220,             -- lift while passing through
+	PopUp        = 1700,            -- upward kick on the release frame
+	KickOut      = 0.8,             -- fraction of ram speed kept on the kick
+	Leash        = 300,             -- let go once they are this far from the start
 
 	-- 3-AXIS tumble. Single-axis spin just parts them aside; all three
 	-- axes at once grinds the body into the target from every angle.
@@ -43,12 +43,16 @@ local CFG = {
 	TumbleZ      = -15999,
 	SpinDir      = 0,               -- 0 = randomise per attempt, +1 / -1 = fixed
 
-	Jitter       = 0,               -- position jitter (off: we ram, not glue)
-
 	AllDelay     = 0.70,            -- seconds between players in FLING ALL
 	DetachDist   = 10,              -- how far to jump clear of the target on stop
 
-	VoidY        = -150,            -- below this we fell out: go home immediately
+	-- NOCLIP. The root can never be stopped or wedged by terrain, and if a
+	-- wall does block the ram we phase straight through it. Our LIMBS stay
+	-- collidable - that is the only way we can still launch anybody.
+	Noclip       = true,
+	PhaseStep    = 12,              -- studs teleported per phase-through
+
+	VoidY        = -150,            -- below this WE fell out: go home immediately
 	ReturnSnap   = 140,             -- further than this from home -> teleport
 	ReturnTime   = 0.50,
 	NavHeight    = 40,              -- height used while coming home
@@ -121,7 +125,9 @@ local F = {
 	tgtRoot   = nil,
 	pt        = 0,       -- time inside current stage
 	attempt   = 0,
-	punch     = 0,       -- which ram pass we are on
+	punch     = 0,       -- which glued pass we are on
+	kicked    = false,   -- has this pass had its kick frame yet
+	lastPos   = nil,     -- last frame position, for the noclip phase check
 	dir       = Vector3.new(1, 0, 0),   -- throw direction (horizontal)
 	ang       = 0,
 	spinSign  = 1,
@@ -221,8 +227,8 @@ local function buildGUI()
 	local function toggle(text, order)
 		local on = true
 		local b = mk("TextButton", {
-			BackgroundColor3 = CLR.card, BorderSizePixel = 0, Size = UDim2.fromOffset(64, 22),
-			Text = text, TextSize = 10, Font = Enum.Font.GothamBold,
+			BackgroundColor3 = CLR.card, BorderSizePixel = 0, Size = UDim2.fromOffset(52, 22),
+			Text = text, TextSize = 9, Font = Enum.Font.GothamBold,
 			TextColor3 = CLR.good, AutoButtonColor = false,
 		}, optRow)
 		b.LayoutOrder = order
@@ -233,10 +239,11 @@ local function buildGUI()
 		end)
 		return function() return on end
 	end
-	W.fRam    = toggle("RAM", 0)
-	W.fLaunch = toggle("LAUNCH", 1)
-	W.fAll    = toggle("ALL PTS", 2)
-	W.fReturn = toggle("RETURN", 3)
+	W.fNoclip = toggle("CLIP", 0)
+	W.fRam    = toggle("RAM", 1)
+	W.fLaunch = toggle("LAUNCH", 2)
+	W.fAll    = toggle("PARTS", 3)
+	W.fReturn = toggle("RETURN", 4)
 
 	---------------- action row ----------------
 	local act = mk("Frame", { BackgroundTransparency = 1,
@@ -571,13 +578,6 @@ local function place(part, pos)
 	part.CFrame = CFrame.new(pos) * (cf - cf.Position)
 end
 
-local function jitterVec()
-	local j = CFG.Jitter
-	if j <= 0 then return Vector3.zero end
-	return Vector3.new((math.random() * 2 - 1) * j, (math.random() * 2 - 1) * j,
-		(math.random() * 2 - 1) * j)
-end
-
 -- THE FLING. Three-axis tumble on our own assembly: every limb is welded
 -- to the root, so this spins the whole body and the limb tips sweep at
 -- omega * radius straight through the target.
@@ -618,10 +618,14 @@ end
 local function prepareSelf(on)
 	if not selfRoot then return end
 	if on then
+		-- LIMBS stay collidable - that is the only thing that can launch
+		-- anybody. The ROOT goes non-colliding so terrain can never wedge
+		-- or stop us (noclip).
 		for _, p in ipairs(selfParts) do
 			pcall(function()
-				p.CanCollide = true
+				p.CanCollide = not p:IsA("HumanoidRootPart")
 				p.CanTouch = false
+				p.CanQuery = not p:IsA("HumanoidRootPart")
 				p.Massless = false
 				if CFG.Ghost and not p:IsA("HumanoidRootPart") then p.Transparency = 1 end
 			end)
@@ -819,6 +823,7 @@ local function flingStep(dt)
 		if not W.fRam() then return setStage(STAGE.LAUNCH) end
 		controlSelf(true)
 		F.punch = F.punch + 1
+		F.kicked = false
 		-- aim at where they are NOW, then stand off just close enough that
 		-- our limbs are already brushing them
 		local aim = tr.Position - root.Position
@@ -827,7 +832,9 @@ local function flingStep(dt)
 		F.dir = flat.Unit
 		place(root, tr.Position - F.dir * CFG.StandOff + Vector3.new(0, 0.5, 0))
 		root.AssemblyLinearVelocity = Vector3.zero
+		root.CanCollide = false      -- noclip while flinging
 		tumbleSelf(F.spinSign)
+		F.lastPos = root.Position
 		W.say(string.format("punching %s  %d/%d", F.target.DisplayName,
 			F.punch, CFG.Punches), CLR.acc)
 		if F.pt >= CFG.ApproachTime then setStage(STAGE.RAM) end
@@ -835,29 +842,41 @@ local function flingStep(dt)
 	------------------------------------------------- RAM (drive THROUGH them)
 	elseif stage == STAGE.RAM then
 		controlSelf(true)
-		-- NO position pinning here on purpose. Pinning let the solver push
-		-- us out every frame, so the overlap never got deep and the impulse
-		-- stayed weak. Free flight lets us actually pass through them.
+		root.CanCollide = false
+		-- NO position pinning. Pinning let the solver push us out every
+		-- frame, so the overlap never got deep and the impulse stayed weak.
 		tumbleSelf(F.spinSign)
 		local speed = math.min(CFG.RamSpeed + (F.punch - 1) * CFG.RamRamp,
 			CFG.MaxRamSpeed)
 		root.AssemblyLinearVelocity = F.dir * speed + Vector3.new(0, CFG.RamUp, 0)
+
+		-- NOCLIP: if terrain ate our travel we phase straight through it
+		if W.fNoclip() and F.lastPos then
+			local want = speed * dt
+			local got = (root.Position - F.lastPos).Magnitude
+			if got < want * 0.4 then
+				place(root, root.Position + F.dir * CFG.PhaseStep)
+			end
+			F.lastPos = root.Position
+		else
+			F.lastPos = root.Position
+		end
+
 		if F.pt >= CFG.PunchStep then setStage(STAGE.LAUNCH) end
 
-	------------------------------------------------- LAUNCH (release: the kick)
+	------------------------------------------------- LAUNCH (the kick frame)
 	elseif stage == STAGE.LAUNCH then
 		controlSelf(true)
-		tumbleSelf(F.spinSign)
-		-- This is the "FLING then STOP" moment, done on purpose every pass:
-		-- drop our velocity to nothing while still buried in them, so the
-		-- solver flushes the whole accumulated overlap out in ONE impulse.
-		-- The gentle back-off biases that impulse onto them, not us.
-		root.AssemblyLinearVelocity = -F.dir * CFG.ReleaseBack
-			+ Vector3.new(0, CFG.PopUp, 0)
-
-		if F.pt >= CFG.ReleaseTime then
+		root.CanCollide = false
+		if not F.kicked then
+			F.kicked = true
+			tumbleSelf(F.spinSign)
+			root.AssemblyLinearVelocity = F.dir * (CFG.RamSpeed * CFG.KickOut)
+				+ Vector3.new(0, CFG.PopUp, 0)
+		else
+			-- kick delivered: clear out and stop
 			stopSpin()
-			-- far enough? let go, or throw another punch
+			detachFromTarget()
 			if (tr.Position - F.seedPos).Magnitude > CFG.Leash then
 				return goHome()
 			end
