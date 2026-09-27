@@ -1,4 +1,4 @@
--- STREAMING_CHUNK:Initializing services and global variables... 2
+-- STREAMING_CHUNK:Initializing services and global variables... 3
 -- // LocalScript (StarterPlayerScripts / StarterGui / Executor) // --
 
 local Players = game:GetService("Players")
