@@ -9,7 +9,7 @@ local LocalPlayer = Players.LocalPlayer
 local PlayerGui = (gethui and gethui()) or LocalPlayer:FindFirstChildOfClass("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui")
 
 -- // Настройки интерфейса // --
-local TOGGLE_KEY = Enum.KeyCode.RightShift -- Клавиша открытия/закрытия GUI
+local TOGGLE_KEY = Enum.KeyCode.RightShift -- Клавиша открытия/закрытия на ПК
 local TITLE_TEXT = "ExampleFling"
 
 -- Создаем основу ScreenGui
@@ -19,7 +19,34 @@ screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = PlayerGui
 
--- Главное окно
+--------------------------------------------------------------------------------
+-- // ПЛАВАЮЩАЯ КНОПКА ДЛЯ ТЕЛЕФОНОВ / ПЛАНШЕТОВ // --
+--------------------------------------------------------------------------------
+local mobileToggle = Instance.new("TextButton")
+mobileToggle.Name = "MobileToggleBtn"
+mobileToggle.Size = UDim2.new(0, 48, 0, 48)
+mobileToggle.Position = UDim2.new(0, 15, 0.4, 0)
+mobileToggle.BackgroundColor3 = Color3.fromRGB(32, 35, 44)
+mobileToggle.BorderSizePixel = 0
+mobileToggle.Text = "EF"
+mobileToggle.TextColor3 = Color3.fromRGB(240, 240, 240)
+mobileToggle.Font = Enum.Font.GothamBold
+mobileToggle.TextSize = 15
+mobileToggle.AutoButtonColor = false
+mobileToggle.Parent = screenGui
+
+local toggleCorner = Instance.new("UICorner")
+toggleCorner.CornerRadius = UDim.new(1, 0) -- Делаем круглую форму
+toggleCorner.Parent = mobileToggle
+
+local toggleStroke = Instance.new("UIStroke")
+toggleStroke.Color = Color3.fromRGB(70, 75, 95)
+toggleStroke.Thickness = 1.6
+toggleStroke.Parent = mobileToggle
+
+--------------------------------------------------------------------------------
+-- // ГЛАВНОЕ ОКНО // --
+--------------------------------------------------------------------------------
 local mainFrame = Instance.new("Frame")
 mainFrame.Name = "MainFrame"
 mainFrame.Size = UDim2.new(0, 520, 0, 320)
@@ -114,7 +141,6 @@ local rightCorner = Instance.new("UICorner")
 rightCorner.CornerRadius = UDim.new(0, 8)
 rightCorner.Parent = rightPanel
 
--- Отображение выбранного игрока
 local selectedLabel = Instance.new("TextLabel")
 selectedLabel.Size = UDim2.new(1, -20, 0, 30)
 selectedLabel.Position = UDim2.new(0, 10, 0, 10)
@@ -126,7 +152,6 @@ selectedLabel.TextSize = 13
 selectedLabel.TextXAlignment = Enum.TextXAlignment.Left
 selectedLabel.Parent = rightPanel
 
--- Индикатор текущего статуса
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Size = UDim2.new(1, -20, 0, 20)
 statusLabel.Position = UDim2.new(0, 10, 0, 40)
@@ -138,7 +163,6 @@ statusLabel.TextSize = 12
 statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 statusLabel.Parent = rightPanel
 
--- Функция создания кнопок
 local function createButton(text, yPos, color)
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(1, -20, 0, 40)
@@ -162,47 +186,9 @@ local btnSelect = createButton("Fling Select", 70, Color3.fromRGB(60, 110, 210))
 local btnAll    = createButton("Fling All", 120, Color3.fromRGB(70, 75, 180))
 local btnStop   = createButton("Stop", 170, Color3.fromRGB(180, 50, 60))
 
--- // Логика Dragging (Перетаскивание) // --
-local dragging = false
-local dragInput, dragStart, startPos
-
-local function updateInput(input)
-    local delta = input.Position - dragStart
-    mainFrame.Position = UDim2.new(
-        startPos.X.Scale,
-        startPos.X.Offset + delta.X,
-        startPos.Y.Scale,
-        startPos.Y.Offset + delta.Y
-    )
-end
-
-topBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = mainFrame.Position
-
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-            end
-        end)
-    end
-end)
-
-topBar.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-        dragInput = input
-    end
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-    if input == dragInput and dragging then
-        updateInput(input)
-    end
-end)
-
--- // Открытие и закрытие по кнопке и клавише // --
+--------------------------------------------------------------------------------
+-- // ЛОГИКА ОТКРЫТИЯ / ПЕРЕТАСКИВАНИЯ КНОПКИ И ОКНА // --
+--------------------------------------------------------------------------------
 local isVisible = true
 local function toggleGui()
     isVisible = not isVisible
@@ -217,8 +203,78 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     end
 end)
 
+-- Перетаскивание мобильной кнопки (Drag + Tap)
+local btnDragging = false
+local btnDragStart = nil
+local btnStartPos = nil
+local btnMoved = false
+
+mobileToggle.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        btnDragging = true
+        btnDragStart = input.Position
+        btnStartPos = mobileToggle.Position
+        btnMoved = false
+
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                btnDragging = false
+                -- Если палец почти не двигался, это клик/тап -> открываем или закрываем GUI
+                if not btnMoved then
+                    toggleGui()
+                end
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) and btnDragging then
+        local delta = input.Position - btnDragStart
+        if delta.Magnitude > 6 then
+            btnMoved = true
+        end
+        mobileToggle.Position = UDim2.new(
+            btnStartPos.X.Scale,
+            btnStartPos.X.Offset + delta.X,
+            btnStartPos.Y.Scale,
+            btnStartPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
+-- Перетаскивание главного окна за TopBar
+local frameDragging = false
+local frameDragStart, frameStartPos
+
+topBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        frameDragging = true
+        frameDragStart = input.Position
+        frameStartPos = mainFrame.Position
+
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                frameDragging = false
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) and frameDragging then
+        local delta = input.Position - frameDragStart
+        mainFrame.Position = UDim2.new(
+            frameStartPos.X.Scale,
+            frameStartPos.X.Offset + delta.X,
+            frameStartPos.Y.Scale,
+            frameStartPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
 --------------------------------------------------------------------------------
--- // ЯДРО: МОМЕНТАЛЬНЫЙ FLING (RAM / PENETRATION) // --
+-- // ЯДРО: МОМЕНТАЛЬНЫЙ FLING // --
 --------------------------------------------------------------------------------
 getgenv().__exampleFlinging = false
 local activeMode = "None"
@@ -254,8 +310,8 @@ local function stopFling()
     statusLabel.Text = "Статус: Остановлено (Stop)"
 end
 
--- Функция моментального выбивания
-local function instantRamFling(target, maxDuration, returnCFrame)
+-- Моментальный флинг в цель
+local function instantFling(target, maxDuration, returnCFrame)
     if not target or target == LocalPlayer then return false end
 
     local myChar = LocalPlayer.Character
@@ -273,7 +329,6 @@ local function instantRamFling(target, maxDuration, returnCFrame)
     local startTime = os.clock()
     getgenv().__exampleFlinging = true
 
-    -- Отключаем коллизию своего тела, чтобы персонаж не спотыкался
     for _, part in ipairs(myChar:GetDescendants()) do
         if part:IsA("BasePart") then
             part.CanCollide = false
@@ -284,8 +339,6 @@ local function instantRamFling(target, maxDuration, returnCFrame)
         flingHeartbeat:Disconnect()
     end
 
-    local flungSuccess = false
-
     flingHeartbeat = RunService.Heartbeat:Connect(function()
         if activeMode == "None" or not getgenv().__exampleFlinging then
             if flingHeartbeat then flingHeartbeat:Disconnect() end
@@ -295,28 +348,22 @@ local function instantRamFling(target, maxDuration, returnCFrame)
         local isTimeout = (os.clock() - startTime) > maxDuration
         local isTargetDead = not targetHum or targetHum.Health <= 0
         local isTargetGone = not targetRoot or not targetRoot.Parent
-
-        -- Проверка: цель уже улетела на высокой скорости (>150) или упала?
         local isFlung = targetRoot and targetRoot.AssemblyLinearVelocity.Magnitude > 150
 
         if isTimeout or isTargetDead or isTargetGone or isFlung then
-            flungSuccess = true
             if flingHeartbeat then flingHeartbeat:Disconnect() end
             return
         end
 
-        -- Мгновенное прошивание цели: телепортация в центр хитбокса со сверхскоростными микро-рывками
         local targetPos = targetRoot.Position
         local targetVel = targetRoot.AssemblyLinearVelocity
 
-        -- Упреждение движения цели + микро-разброс прямо внутри тела
         local microOffset = Vector3.new(
-            math.random(-20, 20) / 100,
-            math.random(-10, 25) / 100,
-            math.random(-20, 20) / 100
+            math.random(-25, 25) / 100,
+            math.random(-15, 30) / 100,
+            math.random(-25, 25) / 100
         )
 
-        -- Случайный угол для взрывного разноса физики
         local randomAngle = CFrame.Angles(
             math.rad(math.random(0, 360)),
             math.rad(math.random(0, 360)),
@@ -324,32 +371,27 @@ local function instantRamFling(target, maxDuration, returnCFrame)
         )
 
         myRoot.CFrame = CFrame.new(targetPos + (targetVel * 0.03) + microOffset) * randomAngle
-
-        -- Экстремальный физический импульс (миллионные значения для мгновенного сброса)
         myRoot.AssemblyLinearVelocity = Vector3.new(9000000, 9000000, 9000000)
         myRoot.AssemblyAngularVelocity = Vector3.new(9000000, 9000000, 9000000)
     end)
 
-    -- Ждем пока цель улетит или выйдет таймаут
     while flingHeartbeat and flingHeartbeat.Connected do
         task.wait()
     end
 
-    -- Гасим импульс своего персонажа
     resetVelocity(myRoot)
 
-    -- Мгновенно возвращаемся на исходное место
     if originCFrame and myRoot and myRoot.Parent then
         task.wait(0.03)
         myRoot.CFrame = originCFrame
         resetVelocity(myRoot)
     end
 
-    return flungSuccess
+    return true
 end
 
 --------------------------------------------------------------------------------
--- // ОБНОВЛЕНИЕ И СПИСОК ИГРОКОВ // --
+-- // СПИСОК ИГРОКОВ // --
 --------------------------------------------------------------------------------
 local function selectPlayer(player)
     targetPlayer = player
@@ -434,7 +476,6 @@ refreshPlayerList()
 -- // КНОПКИ УПРАВЛЕНИЯ // --
 --------------------------------------------------------------------------------
 
--- 1. Fling Select (Моментальный вылет выбранного игрока)
 btnSelect.MouseButton1Click:Connect(function()
     if not targetPlayer then
         statusLabel.Text = "Статус: Ошибка (выберите игрока)"
@@ -443,23 +484,22 @@ btnSelect.MouseButton1Click:Connect(function()
 
     stopFling()
     activeMode = "Select"
-    statusLabel.Text = "Статус: Моментальный вылет -> " .. targetPlayer.DisplayName
+    statusLabel.Text = "Статус: Запуск -> " .. targetPlayer.DisplayName
 
     activeThread = task.spawn(function()
         local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
         local returnCF = myRoot and myRoot.CFrame
 
-        instantRamFling(targetPlayer, 1.2, returnCF)
+        instantFling(targetPlayer, 1.2, returnCF)
 
         if activeMode == "Select" then
             activeMode = "None"
             getgenv().__exampleFlinging = false
-            statusLabel.Text = "Статус: Игрок выбит!"
+            statusLabel.Text = "Статус: Готово (Select)"
         end
     end)
 end)
 
--- 2. Fling All (Молниеносный проход по всем игрокам на сервере)
 btnAll.MouseButton1Click:Connect(function()
     stopFling()
     activeMode = "All"
@@ -475,13 +515,11 @@ btnAll.MouseButton1Click:Connect(function()
 
             if p ~= LocalPlayer and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
                 statusLabel.Text = "Статус: Выбивание -> " .. p.DisplayName
-                -- Быстрый удар: как только цель сдвинулась, сразу берем следующую
-                instantRamFling(p, 0.8, nil)
+                instantFling(p, 0.75, nil)
                 task.wait(0.04)
             end
         end
 
-        -- Возврат на исходную позицию
         if globalOrigin and myRoot and myRoot.Parent then
             myRoot.CFrame = globalOrigin
             resetVelocity(myRoot)
@@ -495,9 +533,8 @@ btnAll.MouseButton1Click:Connect(function()
     end)
 end)
 
--- 3. Stop
 btnStop.MouseButton1Click:Connect(function()
     stopFling()
 end)
 
-print("[ExampleFling] Instant Ram Fling GUI загружен!")
+print("[ExampleFling] Загружено! Мобильная кнопка активна.")
