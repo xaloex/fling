@@ -1,4 +1,4 @@
--- // LocalScript (StarterPlayerScripts / StarterGui / Executor) // --
+-- // LocalScript (StarterPlayerScripts / StarterGui / Executor2323) // --
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -16,9 +16,23 @@ if not genv.FPDH then
     genv.FPDH = workspace.FallenPartsDestroyHeight
 end
 
+-- Переменная для надежного сохранения позиции старта
+local savedOldPos = nil
+
+local function saveOriginalPosition()
+    if genv.__flingActive then return end
+    local myChar = LocalPlayer.Character
+    local myHum  = myChar and myChar:FindFirstChildOfClass("Humanoid")
+    local myRoot = myHum and myHum.RootPart
+    if myRoot and myRoot.AssemblyLinearVelocity.Magnitude < 50 then
+        savedOldPos = myRoot.CFrame
+        genv.OldPos = savedOldPos
+    end
+end
+
 -- // Настройки интерфейса // --
 local TOGGLE_KEY = Enum.KeyCode.RightShift
-local TITLE_TEXT = "RAPID RAM FLING [DEVFORUM PHYSICS]"
+local TITLE_TEXT = "RAPID RAM FLING"
 
 -- Создаем основу ScreenGui
 local screenGui = Instance.new("ScreenGui")
@@ -526,13 +540,12 @@ local function createPlayerCard(player)
     end)
 
     card.MouseLeave:Connect(function()
-        if selectedTarget ~= player then
+        if selectedTarget ~= player corporal then
             TweenService:Create(card, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(26, 26, 26)}):Play()
             TweenService:Create(cardStroke, TweenInfo.new(0.15), {Color = Color3.fromRGB(38, 38, 38)}):Play()
         end
     end)
 
-    -- Клик: выбор или снятие выбора
     card.MouseButton1Click:Connect(function()
         if selectedTarget == player then
             selectedTarget = nil
@@ -577,7 +590,7 @@ end)
 
 refreshList()
 
--- 6. ЯДРО: ЛОГИКА RAPID RAM FLING (DEVFORUM KINEMATIC ENGINE)
+-- 6. ЯДРО: ЛОГИКА RAPID RAM FLING С ГАРАНТИРОВАННЫМ ВОЗВРАТОМ И ТАРАНОМ В ЛОБ
 
 local activeMode = "None"
 local activeThread = nil
@@ -595,6 +608,34 @@ local function cleanupFlingConnections()
     end
 end
 
+-- Гарантированный спасательный телепорт в исходную позицию
+local function returnToOriginalPosition()
+    local targetPos = savedOldPos or genv.OldPos
+    if not targetPos then return end
+    
+    local myChar = LocalPlayer.Character
+    local myHum  = myChar and myChar:FindFirstChildOfClass("Humanoid")
+    local myRoot = myHum and myHum.RootPart
+
+    if myChar and myRoot then
+        for i = 1, 8 do
+            myRoot.CFrame = targetPos * CFrame.new(0, 0.5, 0)
+            myRoot.AssemblyLinearVelocity = Vector3.zero
+            myRoot.AssemblyAngularVelocity = Vector3.zero
+            for _, part in ipairs(myChar:GetChildren()) do
+                if part:IsA("BasePart") then
+                    part.AssemblyLinearVelocity = Vector3.zero
+                    part.AssemblyAngularVelocity = Vector3.zero
+                end
+            end
+            task.wait()
+        end
+        if myHum then
+            myHum:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end
+    end
+end
+
 local function stopFling()
     activeMode = "None"
     genv.__flingActive = false
@@ -606,21 +647,15 @@ local function stopFling()
         activeThread = nil
     end
 
+    -- Нажатие STOP немедленно телепортирует назад в точку старта
+    returnToOriginalPosition()
+
     local myChar = LocalPlayer.Character
     local myHum  = myChar and myChar:FindFirstChildOfClass("Humanoid")
-    local myRoot = myHum and myHum.RootPart
 
     if myHum then
         myHum:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
         myHum:ChangeState(Enum.HumanoidStateType.GettingUp)
-    end
-
-    if myRoot then
-        myRoot.Anchored = true
-        task.wait(0.03)
-        myRoot.AssemblyLinearVelocity = Vector3.zero
-        myRoot.AssemblyAngularVelocity = Vector3.zero
-        myRoot.Anchored = false
     end
 
     if myChar then
@@ -643,7 +678,6 @@ local function stopFling()
     updateStatus("STATUS: STOPPED", Color3.fromRGB(200, 70, 70))
 end
 
--- Получение задержки пинга для идеального расчета траектории на сервере
 local function getNetworkPing()
     local network = Stats and Stats:FindFirstChild("Network")
     local serverStats = network and network:FindFirstChild("ServerStatsItem")
@@ -688,9 +722,8 @@ local function rapidRamFling(TargetPlayer, maxDuration)
         return false
     end
 
-    if RootPart.AssemblyLinearVelocity.Magnitude < 50 then
-        genv.OldPos = RootPart.CFrame
-    end
+    -- Сохраняем начальное местоположение
+    saveOriginalPosition()
 
     if THead then
         workspace.CurrentCamera.CameraSubject = THead
@@ -701,7 +734,7 @@ local function rapidRamFling(TargetPlayer, maxDuration)
     genv.__flingActive = true
     cleanupFlingConnections()
 
-    -- 1. Сверхточный Noclip через Stepped перед фазой обсчета физики
+    -- Noclip непрерывно перед физической фазой
     noclipConnection = RunService.Stepped:Connect(function()
         if Character and Character.Parent then
             for _, part in ipairs(Character:GetDescendants()) do
@@ -724,46 +757,66 @@ local function rapidRamFling(TargetPlayer, maxDuration)
     local angle = 0
     local lastVel = TargetBasePart.AssemblyLinearVelocity
 
-    -- 2. Кинематика 2-го порядка (Учитывает Скорость + Ускорение + Сетевой Пинг)
     heartbeatConnection = RunService.Heartbeat:Connect(function(dt)
         if not genv.__flingActive or activeMode == "None" or not RootPart or not TargetBasePart or not TargetBasePart.Parent or (THumanoid and THumanoid.Health <= 0) then
             return
         end
 
-        angle = (angle + 120) % 360
+        angle = (angle + 100) % 360
 
         local currentPos = TargetBasePart.Position
         local currentVel = TargetBasePart.AssemblyLinearVelocity
         
-        -- Расчет ускорения: A = (V_now - V_last) / dt
+        -- Ускорение A = (V_now - V_last) / dt
         local accel = Vector3.zero
         if dt > 0 then
             accel = (currentVel - lastVel) / dt
         end
         lastVel = currentVel
 
-        -- Итоговое время предсказания (Пинг + оффсет кадров)
         local ping = getNetworkPing()
-        local predTime = math.clamp(ping + 0.12, 0.08, 0.35)
+        local predTime = math.clamp(ping + 0.1, 0.06, 0.3)
 
-        -- Формула движения: P_predicted = P_0 + V*t + 0.5*A*t^2
+        -- 2nd-Order Kinematics: P_pred = P0 + V*t + 0.5*A*t^2
         local predictedPos = currentPos + (currentVel * predTime) + (0.5 * accel * (predTime ^ 2))
 
-        -- Трёхмерное спиральное вращение вокруг кинематической точки
-        local rad = math.rad(angle)
-        local orbitRadius = 1.4
-        local subOffset = Vector3.new(
-            math.cos(rad) * orbitRadius,
-            math.sin(rad * 2) * 1.2,
-            math.sin(rad) * orbitRadius
-        )
+        -- ТАРАН В ЛОБ: Вектор опережения прямо по курсу движения бегущего игрока
+        local moveLead = Vector3.zero
+        if currentVel.Magnitude > 2 then
+            moveLead = currentVel.Unit * 1.8 -- Ставим персонажа прямо ПЕРЕД бегущим игроком
+        elseif THumanoid and THumanoid.MoveDirection.Magnitude > 0.1 then
+            moveLead = THumanoid.MoveDirection * 1.8
+        end
 
-        local finalPos = predictedPos + subOffset
+        -- Чередование точек удара в 3D
+        local step = math.floor(angle / 90) % 4
+        local phaseOffset = Vector3.zero
+        if step == 0 then
+            phaseOffset = moveLead -- Встречный удар в лоб
+        elseif step == 1 then
+            phaseOffset = Vector3.new(0, 1.5, 0) -- Прыжок сверху
+        elseif step == 2 then
+            phaseOffset = Vector3.new(0, -1.5, 0) -- Снизу
+        else
+            phaseOffset = -moveLead * 0.5 -- Сзади
+        end
 
-        -- Импульсный вектор столкновения
-        RootPart.CFrame = CFrame.new(finalPos) * CFrame.Angles(math.rad(angle), math.rad(angle * 3), math.rad(angle * 1.5))
-        RootPart.AssemblyLinearVelocity = Vector3.new(9e7, 9e7 * 10, 9e7)
-        RootPart.AssemblyAngularVelocity = Vector3.new(9e8, 9e8, 9e8)
+        local finalPos = predictedPos + phaseOffset
+
+        Humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+
+        -- Применение вращательного импульса НА ВСЕ ЧАСТИ ТЕЛА
+        RootPart.CFrame = CFrame.new(finalPos) * CFrame.Angles(math.rad(angle * 2), math.rad(angle * 3), math.rad(angle))
+        
+        local extremeVel = Vector3.new(9e7, 9e7 * 10, 9e7)
+        local extremeRot = Vector3.new(9e8, 9e8, 9e8)
+
+        for _, part in ipairs(Character:GetChildren()) do
+            if part:IsA("BasePart") then
+                part.AssemblyLinearVelocity = extremeVel
+                part.AssemblyAngularVelocity = extremeRot
+            end
+        end
     end)
 
     repeat
@@ -781,22 +834,8 @@ local function rapidRamFling(TargetPlayer, maxDuration)
     Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
     workspace.CurrentCamera.CameraSubject = Humanoid
 
-    if genv.OldPos and RootPart and RootPart.Parent then
-        local returnTime = tick()
-        repeat
-            RootPart.CFrame = genv.OldPos * CFrame.new(0, 0.5, 0)
-            Character:SetPrimaryPartCFrame(genv.OldPos * CFrame.new(0, 0.5, 0))
-            Humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
-
-            for _, part in ipairs(Character:GetChildren()) do
-                if part:IsA("BasePart") then
-                    part.AssemblyLinearVelocity = Vector3.zero
-                    part.AssemblyAngularVelocity = Vector3.zero
-                end
-            end
-            task.wait()
-        until (RootPart.Position - genv.OldPos.Position).Magnitude < 25 or (tick() - returnTime) > 1.5
-    end
+    -- Автоматический возврат после завершения
+    returnToOriginalPosition()
 
     if genv.FPDH then
         workspace.FallenPartsDestroyHeight = genv.FPDH
@@ -813,7 +852,9 @@ btnSelect.MouseButton1Click:Connect(function()
         return
     end
 
+    saveOriginalPosition()
     stopFling()
+    
     activeMode = "Select"
     updateStatus("RAMMING: " .. string.upper(selectedTarget.DisplayName), Color3.fromRGB(100, 220, 100))
 
@@ -828,7 +869,9 @@ btnSelect.MouseButton1Click:Connect(function()
 end)
 
 btnAll.MouseButton1Click:Connect(function()
+    saveOriginalPosition()
     stopFling()
+    
     activeMode = "All"
     updateStatus("STATUS: RAMMING ALL...", Color3.fromRGB(220, 180, 80))
 
@@ -853,4 +896,4 @@ btnStop.MouseButton1Click:Connect(function()
     stopFling()
 end)
 
-print("[Monochrome GUI] Меню с физическим кинематическим движком загружено!")
+print("[Monochrome GUI] Исправленный скрипт с гарантированным возвратом запущен!")
