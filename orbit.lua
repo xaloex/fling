@@ -138,7 +138,7 @@ statusLabel.TextSize = 12
 statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 statusLabel.Parent = rightPanel
 
--- Функция-помощник для создания кнопок
+-- Функция создания кнопок
 local function createButton(text, yPos, color)
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(1, -20, 0, 40)
@@ -218,15 +218,14 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 end)
 
 --------------------------------------------------------------------------------
--- // ЯДРО: ЛОГИКА ORBIT FLING (EXAMPLE) // --
+-- // ЯДРО: МОМЕНТАЛЬНЫЙ FLING (RAM / PENETRATION) // --
 --------------------------------------------------------------------------------
 getgenv().__exampleFlinging = false
-local activeMode = "None"     -- "Select", "All", "None"
+local activeMode = "None"
 local targetPlayer = nil
 local flingHeartbeat = nil
 local activeThread = nil
 
--- Очистка скорости персонажа
 local function resetVelocity(root)
     if root and root.Parent then
         root.AssemblyLinearVelocity = Vector3.zero
@@ -234,7 +233,6 @@ local function resetVelocity(root)
     end
 end
 
--- Полная остановка процесса
 local function stopFling()
     activeMode = "None"
     getgenv().__exampleFlinging = false
@@ -256,8 +254,8 @@ local function stopFling()
     statusLabel.Text = "Статус: Остановлено (Stop)"
 end
 
--- Функция вращения по орбите (Orbit Fling) вокруг цели
-local function orbitFling(target, duration, returnCFrame)
+-- Функция моментального выбивания
+local function instantRamFling(target, maxDuration, returnCFrame)
     if not target or target == LocalPlayer then return false end
 
     local myChar = LocalPlayer.Character
@@ -270,24 +268,23 @@ local function orbitFling(target, duration, returnCFrame)
     local targetHum  = targetChar and targetChar:FindFirstChildOfClass("Humanoid")
     if not targetRoot or not targetHum or targetHum.Health <= 0 then return false end
 
-    duration = duration or 2.5
+    maxDuration = maxDuration or 1.2
     local originCFrame = returnCFrame or myRoot.CFrame
     local startTime = os.clock()
     getgenv().__exampleFlinging = true
 
-    -- Отключаем коллизию своего тела, чтобы не застревать
+    -- Отключаем коллизию своего тела, чтобы персонаж не спотыкался
     for _, part in ipairs(myChar:GetDescendants()) do
         if part:IsA("BasePart") then
             part.CanCollide = false
         end
     end
 
-    local orbitRadius = 1.8   -- Радиус орбиты (близкий контакт)
-    local orbitSpeed = 24     -- Скорость вращения по орбите
-
     if flingHeartbeat then
         flingHeartbeat:Disconnect()
     end
+
+    local flungSuccess = false
 
     flingHeartbeat = RunService.Heartbeat:Connect(function()
         if activeMode == "None" or not getgenv().__exampleFlinging then
@@ -295,51 +292,64 @@ local function orbitFling(target, duration, returnCFrame)
             return
         end
 
-        local isTimeout = (os.clock() - startTime) > duration
+        local isTimeout = (os.clock() - startTime) > maxDuration
         local isTargetDead = not targetHum or targetHum.Health <= 0
         local isTargetGone = not targetRoot or not targetRoot.Parent
 
-        if isTimeout or isTargetDead or isTargetGone then
+        -- Проверка: цель уже улетела на высокой скорости (>150) или упала?
+        local isFlung = targetRoot and targetRoot.AssemblyLinearVelocity.Magnitude > 150
+
+        if isTimeout or isTargetDead or isTargetGone or isFlung then
+            flungSuccess = true
             if flingHeartbeat then flingHeartbeat:Disconnect() end
             return
         end
 
-        -- Вычисление точки на орбите вокруг цели
-        local angle = os.clock() * orbitSpeed
-        local offset = Vector3.new(
-            math.cos(angle) * orbitRadius,
-            math.sin(angle * 1.5) * 0.8, -- легкое покачивание по высоте
-            math.sin(angle) * orbitRadius
+        -- Мгновенное прошивание цели: телепортация в центр хитбокса со сверхскоростными микро-рывками
+        local targetPos = targetRoot.Position
+        local targetVel = targetRoot.AssemblyLinearVelocity
+
+        -- Упреждение движения цели + микро-разброс прямо внутри тела
+        local microOffset = Vector3.new(
+            math.random(-20, 20) / 100,
+            math.random(-10, 25) / 100,
+            math.random(-20, 20) / 100
         )
 
-        -- Установка позиции на орбите лицом к центру цели
-        myRoot.CFrame = CFrame.new(targetRoot.Position + offset, targetRoot.Position)
+        -- Случайный угол для взрывного разноса физики
+        local randomAngle = CFrame.Angles(
+            math.rad(math.random(0, 360)),
+            math.rad(math.random(0, 360)),
+            math.rad(math.random(0, 360))
+        )
 
-        -- Передача экстремального физического импульса
-        myRoot.AssemblyLinearVelocity = Vector3.new(45000, 45000, 45000)
-        myRoot.AssemblyAngularVelocity = Vector3.new(45000, 45000, 45000)
+        myRoot.CFrame = CFrame.new(targetPos + (targetVel * 0.03) + microOffset) * randomAngle
+
+        -- Экстремальный физический импульс (миллионные значения для мгновенного сброса)
+        myRoot.AssemblyLinearVelocity = Vector3.new(9000000, 9000000, 9000000)
+        myRoot.AssemblyAngularVelocity = Vector3.new(9000000, 9000000, 9000000)
     end)
 
-    -- Ожидание окончания фазы флинга
+    -- Ждем пока цель улетит или выйдет таймаут
     while flingHeartbeat and flingHeartbeat.Connected do
         task.wait()
     end
 
-    -- Сброс скорости
+    -- Гасим импульс своего персонажа
     resetVelocity(myRoot)
 
-    -- Возврат на исходную позицию
+    -- Мгновенно возвращаемся на исходное место
     if originCFrame and myRoot and myRoot.Parent then
-        task.wait(0.05)
+        task.wait(0.03)
         myRoot.CFrame = originCFrame
         resetVelocity(myRoot)
     end
 
-    return true
+    return flungSuccess
 end
 
 --------------------------------------------------------------------------------
--- // ОБНОВЛЕНИЕ И ВЫБОР ИГРОКОВ В СПИСКЕ // --
+-- // ОБНОВЛЕНИЕ И СПИСОК ИГРОКОВ // --
 --------------------------------------------------------------------------------
 local function selectPlayer(player)
     targetPlayer = player
@@ -361,7 +371,6 @@ local function createPlayerEntry(player)
     entryCorner.CornerRadius = UDim.new(0, 6)
     entryCorner.Parent = entry
 
-    -- Аватарка
     local avatar = Instance.new("ImageLabel")
     avatar.Size = UDim2.new(0, 32, 0, 32)
     avatar.Position = UDim2.new(0, 5, 0.5, -16)
@@ -381,7 +390,6 @@ local function createPlayerEntry(player)
         end
     end)
 
-    -- Имя
     local nameLabel = Instance.new("TextLabel")
     nameLabel.Size = UDim2.new(1, -48, 1, 0)
     nameLabel.Position = UDim2.new(0, 44, 0, 0)
@@ -423,10 +431,10 @@ end)
 refreshPlayerList()
 
 --------------------------------------------------------------------------------
--- // ОБРАБОТЧИКИ КНОПОК УПРАВЛЕНИЯ // --
+-- // КНОПКИ УПРАВЛЕНИЯ // --
 --------------------------------------------------------------------------------
 
--- 1. Fling Select (Флинг только выбранного игрока по орбите)
+-- 1. Fling Select (Моментальный вылет выбранного игрока)
 btnSelect.MouseButton1Click:Connect(function()
     if not targetPlayer then
         statusLabel.Text = "Статус: Ошибка (выберите игрока)"
@@ -435,23 +443,23 @@ btnSelect.MouseButton1Click:Connect(function()
 
     stopFling()
     activeMode = "Select"
-    statusLabel.Text = "Статус: Orbit Fling -> " .. targetPlayer.DisplayName
+    statusLabel.Text = "Статус: Моментальный вылет -> " .. targetPlayer.DisplayName
 
     activeThread = task.spawn(function()
         local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
         local returnCF = myRoot and myRoot.CFrame
 
-        orbitFling(targetPlayer, 3.0, returnCF)
+        instantRamFling(targetPlayer, 1.2, returnCF)
 
         if activeMode == "Select" then
             activeMode = "None"
             getgenv().__exampleFlinging = false
-            statusLabel.Text = "Статус: Завершено (Select)"
+            statusLabel.Text = "Статус: Игрок выбит!"
         end
     end)
 end)
 
--- 2. Fling All (Поочередный Orbit Fling по всем игрокам)
+-- 2. Fling All (Молниеносный проход по всем игрокам на сервере)
 btnAll.MouseButton1Click:Connect(function()
     stopFling()
     activeMode = "All"
@@ -466,14 +474,14 @@ btnAll.MouseButton1Click:Connect(function()
             if activeMode ~= "All" then break end
 
             if p ~= LocalPlayer and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
-                statusLabel.Text = "Статус: Orbit -> " .. p.DisplayName
-                -- Флингуем игрока 1.8 секунды, затем переходим к следующему
-                orbitFling(p, 1.8, nil)
-                task.wait(0.1)
+                statusLabel.Text = "Статус: Выбивание -> " .. p.DisplayName
+                -- Быстрый удар: как только цель сдвинулась, сразу берем следующую
+                instantRamFling(p, 0.8, nil)
+                task.wait(0.04)
             end
         end
 
-        -- Возвращаемся на место, где стояли до начала Fling All
+        -- Возврат на исходную позицию
         if globalOrigin and myRoot and myRoot.Parent then
             myRoot.CFrame = globalOrigin
             resetVelocity(myRoot)
@@ -482,14 +490,14 @@ btnAll.MouseButton1Click:Connect(function()
         if activeMode == "All" then
             activeMode = "None"
             getgenv().__exampleFlinging = false
-            statusLabel.Text = "Статус: Fling All завершен"
+            statusLabel.Text = "Статус: Все игроки выбиты!"
         end
     end)
 end)
 
--- 3. Stop (Моментальная остановка и возврат на место)
+-- 3. Stop
 btnStop.MouseButton1Click:Connect(function()
     stopFling()
 end)
 
-print("[ExampleFling] GUI & Orbit Fling загружены успешно!")
+print("[ExampleFling] Instant Ram Fling GUI загружен!")
