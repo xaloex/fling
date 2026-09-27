@@ -1,4 +1,4 @@
--- STREAMING_CHUNK:Initializing services and global variables...
+-- STREAMING_CHUNK:Initializing services and global variables... 2
 -- // LocalScript (StarterPlayerScripts / StarterGui / Executor) // --
 
 local Players = game:GetService("Players")
@@ -27,6 +27,43 @@ screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = PlayerGui
 
+-- // Менеджер ESP подсветки // --
+local targetHighlight = Instance.new("Highlight")
+targetHighlight.Name = "TargetSelectionESP"
+targetHighlight.FillColor = Color3.fromRGB(50, 255, 50)       -- Зеленый цвет заливки
+targetHighlight.OutlineColor = Color3.fromRGB(255, 255, 255)   -- Белый контур
+targetHighlight.FillTransparency = 0.55
+targetHighlight.OutlineTransparency = 0.1
+targetHighlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop -- Видимость сквозь стены
+targetHighlight.Enabled = false
+
+local charAddedConnection = nil
+
+local function setHighlightTarget(player)
+    if charAddedConnection then
+        charAddedConnection:Disconnect()
+        charAddedConnection = nil
+    end
+
+    if not player then
+        targetHighlight.Enabled = false
+        targetHighlight.Adornee = nil
+        targetHighlight.Parent = nil
+        return
+    end
+
+    local function attach(character)
+        if character then
+            targetHighlight.Adornee = character
+            targetHighlight.Parent = character
+            targetHighlight.Enabled = true
+        end
+    end
+
+    attach(player.Character)
+    charAddedConnection = player.CharacterAdded:Connect(attach)
+end
+
 -- 1. ГЛАВНОЕ ОКНО (Черно-белый стиль)
 
 local mainFrame = Instance.new("Frame")
@@ -47,7 +84,6 @@ mainStroke.Color = Color3.fromRGB(45, 45, 45)
 mainStroke.Thickness = 1.5
 mainStroke.Parent = mainFrame
 
--- Контроллер масштаба для открытия/закрытия окна
 local mainScale = Instance.new("UIScale")
 mainScale.Scale = 1
 mainScale.Parent = mainFrame
@@ -96,7 +132,6 @@ closeCorner.Parent = closeButton
 local closeScale = Instance.new("UIScale")
 closeScale.Parent = closeButton
 
--- Анимация кнопки закрытия
 closeButton.MouseEnter:Connect(function()
     TweenService:Create(closeButton, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(180, 40, 40)}):Play()
     TweenService:Create(closeScale, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Scale = 1.08}):Play()
@@ -176,7 +211,7 @@ selectedLabel.TextSize = 12
 selectedLabel.TextXAlignment = Enum.TextXAlignment.Left
 selectedLabel.Parent = rightPanel
 
--- Статус с плавной сменой
+-- Статус
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Size = UDim2.new(1, -20, 0, 20)
 statusLabel.Position = UDim2.new(0, 10, 0, 36)
@@ -198,7 +233,7 @@ local function updateStatus(text, color)
     end)
 end
 
--- Помощник создания стилизованных кнопок с микро-анимациями
+-- Помощник создания кнопок
 local function createButton(text, yPos, isPrimary)
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(1, -20, 0, 42)
@@ -239,7 +274,6 @@ local function createButton(text, yPos, isPrimary)
     stroke.Color = defaultStroke
     stroke.Thickness = 1
 
-    -- Анимация наведения
     btn.MouseEnter:Connect(function()
         TweenService:Create(btn, TweenInfo.new(0.18), {BackgroundColor3 = hoverBg}):Play()
         TweenService:Create(stroke, TweenInfo.new(0.18), {Color = hoverStroke, Thickness = 1.4}):Play()
@@ -252,7 +286,6 @@ local function createButton(text, yPos, isPrimary)
         TweenService:Create(btnScale, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Scale = 1}):Play()
     end)
 
-    -- Анимация клика (пружина)
     btn.MouseButton1Down:Connect(function()
         TweenService:Create(btnScale, TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Scale = 0.95}):Play()
     end)
@@ -337,7 +370,7 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- 3. ПЕРЕТАСКИВАНИЕ ОКНА (DRAGGING PC/TOUCH)
+-- 3. ПЕРЕТАСКИВАНИЕ ОКНА
 
 local draggingMain = false
 local mainDragStart, mainStartPos, mainDragInput
@@ -374,7 +407,7 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- 4. ОТКРЫТИЕ / ЗАКРЫТИЕ МЕНЮ С ПЛАВНЫМ POP-IN / POP-OUT
+-- 4. ОТКРЫТИЕ / ЗАКРЫТИЕ МЕНЮ
 
 local isGuiOpen = true
 local isTweening = false
@@ -416,9 +449,21 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     end
 end)
 
--- 5. ДИНАМИЧЕСКИЙ СПИСОК ИГРОКОВ С КАРТОЧКАМИ И АНИМАЦИЯМИ
+-- 5. ДИНАМИЧЕСКИЙ СПИСОК ИГРОКОВ С ВЫБОРОМ И ПОДСВЕТКОЙ
 
 local selectedTarget = nil
+
+local function resetCardStyles()
+    for _, otherCard in ipairs(playerScroll:GetChildren()) do
+        if otherCard:IsA("TextButton") then
+            local stroke = otherCard:FindFirstChildOfClass("UIStroke")
+            TweenService:Create(otherCard, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(26, 26, 26)}):Play()
+            if stroke then
+                TweenService:Create(stroke, TweenInfo.new(0.15), {Color = Color3.fromRGB(38, 38, 38)}):Play()
+            end
+        end
+    end
+end
 
 local function createPlayerCard(player)
     if player == LocalPlayer then return end
@@ -473,7 +518,6 @@ local function createPlayerCard(player)
     nameLabel.TextXAlignment = Enum.TextXAlignment.Left
     nameLabel.Parent = card
 
-    -- Ховер-эффект карточки
     card.MouseEnter:Connect(function()
         if selectedTarget ~= player then
             TweenService:Create(card, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(34, 34, 34)}):Play()
@@ -488,22 +532,27 @@ local function createPlayerCard(player)
         end
     end)
 
+    -- Клик: выбор или снятие выбора
     card.MouseButton1Click:Connect(function()
+        if selectedTarget == player then
+            -- Снятие выбора (Deselect)
+            selectedTarget = nil
+            selectedLabel.Text = "TARGET: NONE"
+            resetCardStyles()
+            setHighlightTarget(nil)
+            return
+        end
+
+        -- Новый выбор
         selectedTarget = player
         selectedLabel.Text = "TARGET: " .. string.upper(player.DisplayName)
 
-        for _, otherCard in ipairs(playerScroll:GetChildren()) do
-            if otherCard:IsA("TextButton") then
-                local stroke = otherCard:FindFirstChildOfClass("UIStroke")
-                TweenService:Create(otherCard, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(26, 26, 26)}):Play()
-                if stroke then
-                    TweenService:Create(stroke, TweenInfo.new(0.15), {Color = Color3.fromRGB(38, 38, 38)}):Play()
-                end
-            end
-        end
-
+        resetCardStyles()
         TweenService:Create(card, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(44, 44, 44)}):Play()
         TweenService:Create(cardStroke, TweenInfo.new(0.15), {Color = Color3.fromRGB(150, 150, 150)}):Play()
+
+        -- Включение ESP подсветки
+        setHighlightTarget(player)
     end)
 end
 
@@ -525,12 +574,13 @@ Players.PlayerRemoving:Connect(function(player)
     if selectedTarget == player then
         selectedTarget = nil
         selectedLabel.Text = "TARGET: NONE"
+        setHighlightTarget(nil)
     end
 end)
 
 refreshList()
 
--- 6. ЯДРО: ЛОГИКА RAPID RAM FLING (SKID FLING)
+-- 6. ЯДРО: ЛОГИКА RAPID RAM FLING
 
 local activeMode = "None"
 local activeThread = nil
@@ -744,4 +794,4 @@ btnStop.MouseButton1Click:Connect(function()
     stopFling()
 end)
 
-print("[Monochrome GUI] Интерфейс с анимациями успешно загружен!")
+print("[Monochrome GUI] Меню с анимациями и ESP-подсветкой успешно загружено!")
