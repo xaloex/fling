@@ -1,10 +1,10 @@
--- STREAMING_CHUNK:Initializing services and global variables... 3
 -- // LocalScript (StarterPlayerScripts / StarterGui / Executor) // --
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
+local Stats = game:GetService("Stats")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
@@ -18,7 +18,7 @@ end
 
 -- // Настройки интерфейса // --
 local TOGGLE_KEY = Enum.KeyCode.RightShift
-local TITLE_TEXT = "RAPID RAM FLING"
+local TITLE_TEXT = "RAPID RAM FLING [DEVFORUM PHYSICS]"
 
 -- Создаем основу ScreenGui
 local screenGui = Instance.new("ScreenGui")
@@ -535,7 +535,6 @@ local function createPlayerCard(player)
     -- Клик: выбор или снятие выбора
     card.MouseButton1Click:Connect(function()
         if selectedTarget == player then
-            -- Снятие выбора (Deselect)
             selectedTarget = nil
             selectedLabel.Text = "TARGET: NONE"
             resetCardStyles()
@@ -543,7 +542,6 @@ local function createPlayerCard(player)
             return
         end
 
-        -- Новый выбор
         selectedTarget = player
         selectedLabel.Text = "TARGET: " .. string.upper(player.DisplayName)
 
@@ -551,7 +549,6 @@ local function createPlayerCard(player)
         TweenService:Create(card, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(44, 44, 44)}):Play()
         TweenService:Create(cardStroke, TweenInfo.new(0.15), {Color = Color3.fromRGB(150, 150, 150)}):Play()
 
-        -- Включение ESP подсветки
         setHighlightTarget(player)
     end)
 end
@@ -580,14 +577,29 @@ end)
 
 refreshList()
 
--- 6. ЯДРО: ЛОГИКА RAPID RAM FLING
+-- 6. ЯДРО: ЛОГИКА RAPID RAM FLING (DEVFORUM KINEMATIC ENGINE)
 
 local activeMode = "None"
 local activeThread = nil
+local noclipConnection = nil
+local heartbeatConnection = nil
+
+local function cleanupFlingConnections()
+    if heartbeatConnection then
+        heartbeatConnection:Disconnect()
+        heartbeatConnection = nil
+    end
+    if noclipConnection then
+        noclipConnection:Disconnect()
+        noclipConnection = nil
+    end
+end
 
 local function stopFling()
     activeMode = "None"
     genv.__flingActive = false
+
+    cleanupFlingConnections()
 
     if activeThread then
         task.cancel(activeThread)
@@ -631,6 +643,17 @@ local function stopFling()
     updateStatus("STATUS: STOPPED", Color3.fromRGB(200, 70, 70))
 end
 
+-- Получение задержки пинга для идеального расчета траектории на сервере
+local function getNetworkPing()
+    local network = Stats and Stats:FindFirstChild("Network")
+    local serverStats = network and network:FindFirstChild("ServerStatsItem")
+    local pingStat = serverStats and serverStats:FindFirstChild("Data Ping")
+    if pingStat then
+        return (pingStat:GetValue() / 1000)
+    end
+    return 0.05
+end
+
 local function rapidRamFling(TargetPlayer, maxDuration)
     maxDuration = maxDuration or 2.5
     local Character = LocalPlayer.Character
@@ -638,13 +661,13 @@ local function rapidRamFling(TargetPlayer, maxDuration)
     local RootPart = Humanoid and Humanoid.RootPart
 
     if not Character or not Humanoid or not RootPart then
-        updateStatus("STATUS: CHAR NOT READY")
+        updateStatus("STATUS: CHAR NOT READY", Color3.fromRGB(220, 100, 100))
         return false
     end
 
     local TCharacter = TargetPlayer and TargetPlayer.Character
     if not TCharacter then
-        updateStatus("STATUS: NO TARGET CHAR")
+        updateStatus("STATUS: NO TARGET CHAR", Color3.fromRGB(220, 100, 100))
         return false
     end
 
@@ -655,7 +678,13 @@ local function rapidRamFling(TargetPlayer, maxDuration)
     local Handle = Accessory and Accessory:FindFirstChild("Handle")
 
     if THumanoid and THumanoid.Sit then
-        updateStatus("STATUS: TARGET IS SITTING")
+        updateStatus("STATUS: TARGET IS SITTING", Color3.fromRGB(220, 180, 80))
+        return false
+    end
+
+    local TargetBasePart = TRootPart or THead or Handle
+    if not TargetBasePart then
+        updateStatus("STATUS: NO VALID TARGET PART", Color3.fromRGB(220, 100, 100))
         return false
     end
 
@@ -665,25 +694,23 @@ local function rapidRamFling(TargetPlayer, maxDuration)
 
     if THead then
         workspace.CurrentCamera.CameraSubject = THead
-    elseif Handle then
-        workspace.CurrentCamera.CameraSubject = Handle
-    elseif THumanoid and TRootPart then
+    elseif THumanoid then
         workspace.CurrentCamera.CameraSubject = THumanoid
     end
 
-    local TargetBasePart = TRootPart or THead or Handle
-    if not TargetBasePart then
-        updateStatus("STATUS: NO VALID TARGET PART")
-        return false
-    end
-
     genv.__flingActive = true
+    cleanupFlingConnections()
 
-    for _, part in ipairs(Character:GetDescendants()) do
-        if part:IsA("BasePart") then
-            part.CanCollide = false
+    -- 1. Сверхточный Noclip через Stepped перед фазой обсчета физики
+    noclipConnection = RunService.Stepped:Connect(function()
+        if Character and Character.Parent then
+            for _, part in ipairs(Character:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = false
+                end
+            end
         end
-    end
+    end)
 
     workspace.FallenPartsDestroyHeight = 0/0
     Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, false)
@@ -693,49 +720,64 @@ local function rapidRamFling(TargetPlayer, maxDuration)
     BV.Velocity = Vector3.zero
     BV.MaxForce = Vector3.new(9e9, 9e9, 9e9)
 
-    local FPos = function(BasePart, Pos, Ang)
-        if not RootPart or not RootPart.Parent then return end
-        RootPart.CFrame = CFrame.new(BasePart.Position) * Pos * Ang
-        Character:SetPrimaryPartCFrame(CFrame.new(BasePart.Position) * Pos * Ang)
+    local startTime = tick()
+    local angle = 0
+    local lastVel = TargetBasePart.AssemblyLinearVelocity
+
+    -- 2. Кинематика 2-го порядка (Учитывает Скорость + Ускорение + Сетевой Пинг)
+    heartbeatConnection = RunService.Heartbeat:Connect(function(dt)
+        if not genv.__flingActive or activeMode == "None" or not RootPart or not TargetBasePart or not TargetBasePart.Parent or (THumanoid and THumanoid.Health <= 0) then
+            return
+        end
+
+        angle = (angle + 120) % 360
+
+        local currentPos = TargetBasePart.Position
+        local currentVel = TargetBasePart.AssemblyLinearVelocity
+        
+        -- Расчет ускорения: A = (V_now - V_last) / dt
+        local accel = Vector3.zero
+        if dt > 0 then
+            accel = (currentVel - lastVel) / dt
+        end
+        lastVel = currentVel
+
+        -- Итоговое время предсказания (Пинг + оффсет кадров)
+        local ping = getNetworkPing()
+        local predTime = math.clamp(ping + 0.12, 0.08, 0.35)
+
+        -- Формула движения: P_predicted = P_0 + V*t + 0.5*A*t^2
+        local predictedPos = currentPos + (currentVel * predTime) + (0.5 * accel * (predTime ^ 2))
+
+        -- Трёхмерное спиральное вращение вокруг кинематической точки
+        local rad = math.rad(angle)
+        local orbitRadius = 1.4
+        local subOffset = Vector3.new(
+            math.cos(rad) * orbitRadius,
+            math.sin(rad * 2) * 1.2,
+            math.sin(rad) * orbitRadius
+        )
+
+        local finalPos = predictedPos + subOffset
+
+        -- Импульсный вектор столкновения
+        RootPart.CFrame = CFrame.new(finalPos) * CFrame.Angles(math.rad(angle), math.rad(angle * 3), math.rad(angle * 1.5))
         RootPart.AssemblyLinearVelocity = Vector3.new(9e7, 9e7 * 10, 9e7)
         RootPart.AssemblyAngularVelocity = Vector3.new(9e8, 9e8, 9e8)
-    end
-
-    local startTime = tick()
-    local Angle = 0
+    end)
 
     repeat
-        if not RootPart or not THumanoid or THumanoid.Health <= 0 then break end
+        task.wait()
+    until (tick() - startTime) > maxDuration 
+       or not genv.__flingActive 
+       or activeMode == "None" 
+       or not TargetBasePart 
+       or not TargetBasePart.Parent 
+       or (THumanoid and THumanoid.Health <= 0)
 
-        if TargetBasePart and TargetBasePart.Parent then
-            if TargetBasePart.AssemblyLinearVelocity.Magnitude < 50 then
-                Angle = Angle + 100
-                FPos(TargetBasePart, CFrame.new(0, 1.5, 0) + THumanoid.MoveDirection * TargetBasePart.AssemblyLinearVelocity.Magnitude / 1.25, CFrame.Angles(math.rad(Angle), 0, 0))
-                task.wait()
-                FPos(TargetBasePart, CFrame.new(0, -1.5, 0) + THumanoid.MoveDirection * TargetBasePart.AssemblyLinearVelocity.Magnitude / 1.25, CFrame.Angles(math.rad(Angle), 0, 0))
-                task.wait()
-                FPos(TargetBasePart, CFrame.new(0, 1.5, 0) + THumanoid.MoveDirection, CFrame.Angles(math.rad(Angle), 0, 0))
-                task.wait()
-                FPos(TargetBasePart, CFrame.new(0, -1.5, 0) + THumanoid.MoveDirection, CFrame.Angles(math.rad(Angle), 0, 0))
-                task.wait()
-            else
-                FPos(TargetBasePart, CFrame.new(0, 1.5, THumanoid.WalkSpeed), CFrame.Angles(math.rad(90), 0, 0))
-                task.wait()
-                FPos(TargetBasePart, CFrame.new(0, -1.5, -THumanoid.WalkSpeed), CFrame.Angles(0, 0, 0))
-                task.wait()
-                FPos(TargetBasePart, CFrame.new(0, 1.5, THumanoid.WalkSpeed), CFrame.Angles(math.rad(90), 0, 0))
-                task.wait()
-                FPos(TargetBasePart, CFrame.new(0, -1.5, 0), CFrame.Angles(math.rad(90), 0, 0))
-                task.wait()
-                FPos(TargetBasePart, CFrame.new(0, -1.5, 0), CFrame.Angles(0, 0, 0))
-                task.wait()
-            end
-        else
-            break
-        end
-    until (tick() - startTime) > maxDuration or not genv.__flingActive or activeMode == "None"
-
+    cleanupFlingConnections()
     if BV then BV:Destroy() end
+
     Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
     workspace.CurrentCamera.CameraSubject = Humanoid
 
@@ -811,4 +853,4 @@ btnStop.MouseButton1Click:Connect(function()
     stopFling()
 end)
 
-print("[Monochrome GUI] Меню с анимациями и ESP-подсветкой успешно загружено!")
+print("[Monochrome GUI] Меню с физическим кинематическим движком загружено!")
