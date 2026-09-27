@@ -600,10 +600,27 @@ local function stopFling()
 
     if myHum then
         myHum:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
+        myHum:ChangeState(Enum.HumanoidStateType.GettingUp)
     end
+
     if myRoot then
+        myRoot.Anchored = true
+        task.wait(0.03)
         myRoot.AssemblyLinearVelocity = Vector3.zero
         myRoot.AssemblyAngularVelocity = Vector3.zero
+        myRoot.Anchored = false
+    end
+
+    if myChar then
+        for _, part in ipairs(myChar:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.AssemblyLinearVelocity = Vector3.zero
+                part.AssemblyAngularVelocity = Vector3.zero
+                if part.Name == "HumanoidRootPart" or part.Name == "Torso" or part.Name == "UpperTorso" then
+                    part.CanCollide = true
+                end
+            end
+        end
     end
 
     workspace.CurrentCamera.CameraSubject = myHum
