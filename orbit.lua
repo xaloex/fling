@@ -11,11 +11,14 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
 -- Безопасное получение глобального окружения
 local genv = (getgenv and getgenv()) or _G
-genv.__exampleFlinging = false
+genv.__flingActive = false
+if not genv.FPDH then
+genv.FPDH = workspace.FallenPartsDestroyHeight
+end
 
 -- // Настройки интерфейса // --
 local TOGGLE_KEY = Enum.KeyCode.RightShift
-local TITLE_TEXT = "MONOCHROME ORBIT FLING"
+local TITLE_TEXT = "RAPID RAM FLING"
 
 -- Создаем основу ScreenGui
 local screenGui = Instance.new("ScreenGui")
@@ -189,20 +192,17 @@ local stroke = Instance.new("UIStroke")
 stroke.Parent = btn
 
 if isPrimary then
-    -- Контрастная белая кнопка с черным текстом
     btn.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
     btn.TextColor3 = Color3.fromRGB(15, 15, 15)
     stroke.Color = Color3.fromRGB(255, 255, 255)
     stroke.Thickness = 1
 else
-    -- Темная кнопка с тонкой рамкой
     btn.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
     btn.TextColor3 = Color3.fromRGB(230, 230, 230)
     stroke.Color = Color3.fromRGB(50, 50, 50)
     stroke.Thickness = 1
 end
 
--- Анимация наведения / нажатия
 btn.MouseEnter:Connect(function()
     TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundTransparency = 0.2}):Play()
 end)
@@ -213,10 +213,11 @@ end)
 return btn
 
 
+
 end
 
-local btnSelect = createButton("FLING SELECT", 70, true)
-local btnAll    = createButton("FLING ALL", 122, false)
+local btnSelect = createButton("RAM SELECT", 70, true)
+local btnAll    = createButton("RAM ALL", 122, false)
 local btnStop   = createButton("STOP", 174, false)
 
 -- STREAMING_CHUNK:Configuring mobile toggle button and interactions...
@@ -243,7 +244,6 @@ toggleStroke.Color = Color3.fromRGB(65, 65, 65)
 toggleStroke.Thickness = 1.5
 toggleStroke.Parent = mobileToggle
 
--- Перетаскивание мобильной кнопки (Drag)
 local isDraggingMobile = false
 local mobileDragStart = nil
 local mobileStartPos = nil
@@ -262,6 +262,7 @@ mobileStartPos = mobileToggle.Position
         end
     end)
 end
+
 
 
 end)
@@ -302,6 +303,7 @@ mainStartPos = mainFrame.Position
 end
 
 
+
 end)
 
 topBar.InputChanged:Connect(function(input)
@@ -335,14 +337,12 @@ end
 
 closeButton.MouseButton1Click:Connect(toggleMenu)
 
--- Клик по плавающей кнопке (срабатывает, только если не перетаскивали)
 mobileToggle.Activated:Connect(function()
 if not mobileMoved then
 toggleMenu()
 end
 end)
 
--- Переключение по кнопке на клавиатуре
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 if not gameProcessed and input.KeyCode == TOGGLE_KEY then
 toggleMenu()
@@ -375,7 +375,6 @@ cardStroke.Color = Color3.fromRGB(38, 38, 38)
 cardStroke.Thickness = 1
 cardStroke.Parent = card
 
--- Круглая аватарка
 local avatar = Instance.new("ImageLabel")
 avatar.Size = UDim2.new(0, 32, 0, 32)
 avatar.Position = UDim2.new(0, 6, 0.5, -16)
@@ -386,7 +385,6 @@ local avatarCorner = Instance.new("UICorner")
 avatarCorner.CornerRadius = UDim.new(1, 0)
 avatarCorner.Parent = avatar
 
--- Подгрузка миниатюры лица
 task.spawn(function()
     local content, isReady = Players:GetUserThumbnailAsync(
         player.UserId,
@@ -398,7 +396,6 @@ task.spawn(function()
     end
 end)
 
--- Имя игрока
 local nameLabel = Instance.new("TextLabel")
 nameLabel.Size = UDim2.new(1, -50, 1, 0)
 nameLabel.Position = UDim2.new(0, 46, 0, 0)
@@ -411,12 +408,10 @@ nameLabel.TextSize = 12
 nameLabel.TextXAlignment = Enum.TextXAlignment.Left
 nameLabel.Parent = card
 
--- Выбор цели по клику
 card.MouseButton1Click:Connect(function()
     selectedTarget = player
     selectedLabel.Text = "TARGET: " .. string.upper(player.DisplayName)
     
-    -- Подсветка активной карточки
     for _, otherCard in ipairs(playerScroll:GetChildren()) do
         if otherCard:IsA("TextButton") then
             otherCard.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
@@ -424,6 +419,7 @@ card.MouseButton1Click:Connect(function()
     end
     card.BackgroundColor3 = Color3.fromRGB(42, 42, 42)
 end)
+
 
 
 end
@@ -451,124 +447,184 @@ end)
 
 refreshList()
 
--- STREAMING_CHUNK:Implementing core orbit fling physics engine...
+-- STREAMING_CHUNK:Implementing Rapid Ram / Skid Fling physics engine...
 
--- 6. ЯДРО: ЛОГИКА ORBIT FLING
+-- 6. ЯДРО: ЛОГИКА RAPID RAM FLING (SKID FLING)
 
 local activeMode = "None"     -- "Select", "All", "None"
-local flingHeartbeat = nil
 local activeThread = nil
 
--- Очистка скорости персонажа
-local function resetVelocity(root)
-if root and root.Parent then
-root.AssemblyLinearVelocity = Vector3.zero
-root.AssemblyAngularVelocity = Vector3.zero
-end
-end
-
--- Полная остановка процесса
 local function stopFling()
 activeMode = "None"
-genv.__exampleFlinging = false
+genv.__flingActive = false
 
-if flingHeartbeat then
-    flingHeartbeat:Disconnect()
-    flingHeartbeat = nil
-end
 if activeThread then
     task.cancel(activeThread)
     activeThread = nil
 end
 
 local myChar = LocalPlayer.Character
-local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-resetVelocity(myRoot)
-statusLabel.Text = "STATUS: IDLE"
+local myHum  = myChar and myChar:FindFirstChildOfClass("Humanoid")
+local myRoot = myHum and myHum.RootPart
+
+if myHum then
+    myHum:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
+end
+if myRoot then
+    myRoot.AssemblyLinearVelocity = Vector3.zero
+    myRoot.AssemblyAngularVelocity = Vector3.zero
+end
+
+workspace.CurrentCamera.CameraSubject = myHum
+if genv.FPDH then
+    workspace.FallenPartsDestroyHeight = genv.FPDH
+end
+
+statusLabel.Text = "STATUS: STOPPED"
+
 
 
 end
 
--- Функция вращения по орбите (Orbit Fling) вокруг цели
-local function orbitFling(target, duration, returnCFrame)
-if not target or target == LocalPlayer then return false end
+local function rapidRamFling(TargetPlayer, maxDuration)
+maxDuration = maxDuration or 2.5
+local Character = LocalPlayer.Character
+local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+local RootPart = Humanoid and Humanoid.RootPart
 
-local myChar = LocalPlayer.Character
-local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-local myHum  = myChar and myChar:FindFirstChildOfClass("Humanoid")
-if not myRoot or not myHum or myHum.Health <= 0 then return false end
+if not Character or not Humanoid or not RootPart then
+    statusLabel.Text = "STATUS: CHAR NOT READY"
+    return false
+end
 
-local targetChar = target.Character
-local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
-local targetHum  = targetChar and targetChar:FindFirstChildOfClass("Humanoid")
-if not targetRoot or not targetHum or targetHum.Health <= 0 then return false end
+local TCharacter = TargetPlayer and TargetPlayer.Character
+if not TCharacter then
+    statusLabel.Text = "STATUS: NO TARGET CHAR"
+    return false
+end
 
-duration = duration or 2.5
-local originCFrame = returnCFrame or myRoot.CFrame
-local startTime = os.clock()
-genv.__exampleFlinging = true
+local THumanoid = TCharacter:FindFirstChildOfClass("Humanoid")
+local TRootPart = THumanoid and THumanoid.RootPart
+local THead = TCharacter:FindFirstChild("Head")
+local Accessory = TCharacter:FindFirstChildOfClass("Accessory")
+local Handle = Accessory and Accessory:FindFirstChild("Handle")
 
--- Отключаем коллизию своего тела, чтобы не застревать
-for _, part in ipairs(myChar:GetDescendants()) do
+if THumanoid and THumanoid.Sit then
+    statusLabel.Text = "STATUS: TARGET IS SITTING"
+    return false
+end
+
+-- Сохраняем исходную позицию
+if RootPart.AssemblyLinearVelocity.Magnitude < 50 then
+    genv.OldPos = RootPart.CFrame
+end
+
+-- Наведение камеры на цель
+if THead then
+    workspace.CurrentCamera.CameraSubject = THead
+elseif Handle then
+    workspace.CurrentCamera.CameraSubject = Handle
+elseif THumanoid and TRootPart then
+    workspace.CurrentCamera.CameraSubject = THumanoid
+end
+
+local TargetBasePart = TRootPart or THead or Handle
+if not TargetBasePart then
+    statusLabel.Text = "STATUS: NO VALID TARGET PART"
+    return false
+end
+
+genv.__flingActive = true
+
+-- Отключаем коллизию своего персонажа
+for _, part in ipairs(Character:GetDescendants()) do
     if part:IsA("BasePart") then
         part.CanCollide = false
     end
 end
 
-local orbitRadius = 1.8   -- Радиус орбиты (близкий контакт)
-local orbitSpeed = 24     -- Скорость вращения по орбите
+-- Настройка силового импульса
+workspace.FallenPartsDestroyHeight = 0/0
+Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, false)
 
-if flingHeartbeat then
-    flingHeartbeat:Disconnect()
+local BV = Instance.new("BodyVelocity")
+BV.Parent = RootPart
+BV.Velocity = Vector3.zero
+BV.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+
+-- Вспомогательная функция позиционирования с безумной скоростью
+local FPos = function(BasePart, Pos, Ang)
+    if not RootPart or not RootPart.Parent then return end
+    RootPart.CFrame = CFrame.new(BasePart.Position) * Pos * Ang
+    Character:SetPrimaryPartCFrame(CFrame.new(BasePart.Position) * Pos * Ang)
+    RootPart.AssemblyLinearVelocity = Vector3.new(9e7, 9e7 * 10, 9e7)
+    RootPart.AssemblyAngularVelocity = Vector3.new(9e8, 9e8, 9e8)
 end
 
-flingHeartbeat = RunService.Heartbeat:Connect(function()
-    if activeMode == "None" or not genv.__exampleFlinging then
-        if flingHeartbeat then flingHeartbeat:Disconnect() end
-        return
+local startTime = tick()
+local Angle = 0
+
+-- Главный таранный цикл (Rapid Ram Loop)
+repeat
+    if not RootPart or not THumanoid or THumanoid.Health <= 0 then break end
+
+    if BasePart and BasePart.Parent then
+        if BasePart.AssemblyLinearVelocity.Magnitude < 50 then
+            Angle = Angle + 100
+            FPos(BasePart, CFrame.new(0, 1.5, 0) + THumanoid.MoveDirection * BasePart.AssemblyLinearVelocity.Magnitude / 1.25, CFrame.Angles(math.rad(Angle), 0, 0))
+            task.wait()
+            FPos(BasePart, CFrame.new(0, -1.5, 0) + THumanoid.MoveDirection * BasePart.AssemblyLinearVelocity.Magnitude / 1.25, CFrame.Angles(math.rad(Angle), 0, 0))
+            task.wait()
+            FPos(BasePart, CFrame.new(0, 1.5, 0) + THumanoid.MoveDirection, CFrame.Angles(math.rad(Angle), 0, 0))
+            task.wait()
+            FPos(BasePart, CFrame.new(0, -1.5, 0) + THumanoid.MoveDirection, CFrame.Angles(math.rad(Angle), 0, 0))
+            task.wait()
+        else
+            FPos(BasePart, CFrame.new(0, 1.5, THumanoid.WalkSpeed), CFrame.Angles(math.rad(90), 0, 0))
+            task.wait()
+            FPos(BasePart, CFrame.new(0, -1.5, -THumanoid.WalkSpeed), CFrame.Angles(0, 0, 0))
+            task.wait()
+            FPos(BasePart, CFrame.new(0, 1.5, THumanoid.WalkSpeed), CFrame.Angles(math.rad(90), 0, 0))
+            task.wait()
+            FPos(BasePart, CFrame.new(0, -1.5, 0), CFrame.Angles(math.rad(90), 0, 0))
+            task.wait()
+            FPos(BasePart, CFrame.new(0, -1.5, 0), CFrame.Angles(0, 0, 0))
+            task.wait()
+        end
+    else
+        break
     end
+until (tick() - startTime) > maxDuration or not genv.__flingActive or activeMode == "None"
 
-    local isTimeout = (os.clock() - startTime) > duration
-    local isTargetDead = not targetHum or targetHum.Health <= 0
-    local isTargetGone = not targetRoot or not targetRoot.Parent
+-- Завершение и очистка
+if BV then BV:Destroy() end
+Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
+workspace.CurrentCamera.CameraSubject = Humanoid
 
-    if isTimeout or isTargetDead or isTargetGone then
-        if flingHeartbeat then flingHeartbeat:Disconnect() end
-        return
-    end
+-- Безопасное возвращение персонажа на прежнее место
+if genv.OldPos and RootPart and RootPart.Parent then
+    local returnTime = tick()
+    repeat
+        RootPart.CFrame = genv.OldPos * CFrame.new(0, 0.5, 0)
+        Character:SetPrimaryPartCFrame(genv.OldPos * CFrame.new(0, 0.5, 0))
+        Humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
 
-    -- Вычисление точки на орбите вокруг цели
-    local angle = os.clock() * orbitSpeed
-    local offset = Vector3.new(
-        math.cos(angle) * orbitRadius,
-        math.sin(angle * 1.5) * 0.8, -- легкое покачивание по высоте
-        math.sin(angle) * orbitRadius
-    )
-
-    -- Установка позиции на орбите лицом к центру цели
-    myRoot.CFrame = CFrame.new(targetRoot.Position + offset, targetRoot.Position)
-
-    -- Передача экстремального физического импульса
-    myRoot.AssemblyLinearVelocity = Vector3.new(45000, 45000, 45000)
-    myRoot.AssemblyAngularVelocity = Vector3.new(45000, 45000, 45000)
-end)
-
--- Ожидание окончания фазы флинга
-while flingHeartbeat and flingHeartbeat.Connected do
-    task.wait()
+        for _, part in ipairs(Character:GetChildren()) do
+            if part:IsA("BasePart") then
+                part.AssemblyLinearVelocity = Vector3.zero
+                part.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+        task.wait()
+    until (RootPart.Position - genv.OldPos.Position).Magnitude < 25 or (tick() - returnTime) > 1.5
 end
 
--- Сброс скорости
-resetVelocity(myRoot)
-
--- Возврат на исходную позицию
-if originCFrame and myRoot and myRoot.Parent then
-    task.wait(0.05)
-    myRoot.CFrame = originCFrame
-    resetVelocity(myRoot)
+if genv.FPDH then
+    workspace.FallenPartsDestroyHeight = genv.FPDH
 end
 
 return true
+
 
 
 end
@@ -585,20 +641,17 @@ end
 
 stopFling()
 activeMode = "Select"
-statusLabel.Text = "FLING: " .. string.upper(selectedTarget.DisplayName)
+statusLabel.Text = "RAMMING: " .. string.upper(selectedTarget.DisplayName)
 
 activeThread = task.spawn(function()
-    local myChar = LocalPlayer.Character
-    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-    local savedCFrame = myRoot and myRoot.CFrame
-
-    orbitFling(selectedTarget, 3.5, savedCFrame)
+    rapidRamFling(selectedTarget, 3.0)
 
     if activeMode == "Select" then
-        statusLabel.Text = "STATUS: COMPLETED"
+        statusLabel.Text = "STATUS: RAM COMPLETED"
         activeMode = "None"
     end
 end)
+
 
 
 end)
@@ -606,34 +659,34 @@ end)
 btnAll.MouseButton1Click:Connect(function()
 stopFling()
 activeMode = "All"
-statusLabel.Text = "STATUS: FLINGING ALL..."
+statusLabel.Text = "STATUS: RAMMING ALL..."
 
 activeThread = task.spawn(function()
-    local myChar = LocalPlayer.Character
-    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-    local savedCFrame = myRoot and myRoot.CFrame
-
     for _, plr in ipairs(Players:GetPlayers()) do
         if activeMode ~= "All" then break end
         if plr ~= LocalPlayer then
-            statusLabel.Text = "FLING ALL -> " .. string.upper(plr.DisplayName)
-            orbitFling(plr, 2.0, savedCFrame)
+            statusLabel.Text = "RAM ALL -> " .. string.upper(plr.DisplayName)
+            rapidRamFling(plr, 1.8)
             task.wait(0.1)
         end
     end
 
     if activeMode == "All" then
-        statusLabel.Text = "STATUS: ALL DONE"
+        statusLabel.Text = "STATUS: ALL RAMMED"
         activeMode = "None"
     end
 end)
+
 
 
 end)
 
 btnStop.MouseButton1Click:Connect(function()
 stopFling()
-statusLabel.Text = "STATUS: STOPPED"
 end)
 
-print("[Monochrome Fling] Скрипт с Orbit Fling успешно запущен!")
+print("
+
+$$Rapid Ram Fling$$
+
+ Мощный Skid Fling успешно загружен!")
