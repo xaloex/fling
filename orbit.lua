@@ -13,7 +13,7 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 local genv = (getgenv and getgenv()) or _G
 genv.__flingActive = false
 if not genv.FPDH then
-genv.FPDH = workspace.FallenPartsDestroyHeight
+    genv.FPDH = workspace.FallenPartsDestroyHeight
 end
 
 -- // Настройки интерфейса // --
@@ -26,8 +26,6 @@ screenGui.Name = "MonochromeGui"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = PlayerGui
-
--- STREAMING_CHUNK:Creating main GUI frame and header...
 
 -- 1. ГЛАВНОЕ ОКНО (Черно-белый стиль)
 
@@ -48,6 +46,11 @@ local mainStroke = Instance.new("UIStroke")
 mainStroke.Color = Color3.fromRGB(45, 45, 45)
 mainStroke.Thickness = 1.5
 mainStroke.Parent = mainFrame
+
+-- Контроллер масштаба для открытия/закрытия окна
+local mainScale = Instance.new("UIScale")
+mainScale.Scale = 1
+mainScale.Parent = mainFrame
 
 -- Верхняя панель (Header)
 local topBar = Instance.new("Frame")
@@ -90,7 +93,20 @@ local closeCorner = Instance.new("UICorner")
 closeCorner.CornerRadius = UDim.new(0, 8)
 closeCorner.Parent = closeButton
 
--- STREAMING_CHUNK:Creating content panels and player list container...
+local closeScale = Instance.new("UIScale")
+closeScale.Parent = closeButton
+
+-- Анимация кнопки закрытия
+closeButton.MouseEnter:Connect(function()
+    TweenService:Create(closeButton, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(180, 40, 40)}):Play()
+    TweenService:Create(closeScale, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Scale = 1.08}):Play()
+end)
+
+closeButton.MouseLeave:Connect(function()
+    TweenService:Create(closeButton, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(28, 28, 28)}):Play()
+    TweenService:Create(closeScale, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Scale = 1}):Play()
+end)
+
 -- Контейнер содержимого
 local contentFrame = Instance.new("Frame")
 contentFrame.Size = UDim2.new(1, -24, 1, -56)
@@ -131,7 +147,6 @@ listLayout.Padding = UDim.new(0, 6)
 listLayout.SortOrder = Enum.SortOrder.LayoutOrder
 listLayout.Parent = playerScroll
 
--- STREAMING_CHUNK:Creating right panel, target stats and control buttons...
 -- Правая панель: Действия и информация
 local rightPanel = Instance.new("Frame")
 rightPanel.Size = UDim2.new(0.5, -6, 1, 0)
@@ -161,7 +176,7 @@ selectedLabel.TextSize = 12
 selectedLabel.TextXAlignment = Enum.TextXAlignment.Left
 selectedLabel.Parent = rightPanel
 
--- Статус
+-- Статус с плавной сменой
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Size = UDim2.new(1, -20, 0, 20)
 statusLabel.Position = UDim2.new(0, 10, 0, 36)
@@ -173,54 +188,85 @@ statusLabel.TextSize = 11
 statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 statusLabel.Parent = rightPanel
 
--- Помощник создания стилизованных кнопок
-local function createButton(text, yPos, isPrimary)
-local btn = Instance.new("TextButton")
-btn.Size = UDim2.new(1, -20, 0, 42)
-btn.Position = UDim2.new(0, 10, 0, yPos)
-btn.Font = Enum.Font.GothamBold
-btn.TextSize = 12
-btn.Text = text
-btn.AutoButtonColor = false
-btn.Parent = rightPanel
-
-local corner = Instance.new("UICorner")
-corner.CornerRadius = UDim.new(0, 8)
-corner.Parent = btn
-
-local stroke = Instance.new("UIStroke")
-stroke.Parent = btn
-
-if isPrimary then
-    btn.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
-    btn.TextColor3 = Color3.fromRGB(15, 15, 15)
-    stroke.Color = Color3.fromRGB(255, 255, 255)
-    stroke.Thickness = 1
-else
-    btn.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
-    btn.TextColor3 = Color3.fromRGB(230, 230, 230)
-    stroke.Color = Color3.fromRGB(50, 50, 50)
-    stroke.Thickness = 1
+local function updateStatus(text, color)
+    color = color or Color3.fromRGB(150, 150, 150)
+    TweenService:Create(statusLabel, TweenInfo.new(0.12), {TextTransparency = 0.6}):Play()
+    task.delay(0.12, function()
+        statusLabel.Text = text
+        statusLabel.TextColor3 = color
+        TweenService:Create(statusLabel, TweenInfo.new(0.18), {TextTransparency = 0}):Play()
+    end)
 end
 
-btn.MouseEnter:Connect(function()
-    TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundTransparency = 0.2}):Play()
-end)
-btn.MouseLeave:Connect(function()
-    TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundTransparency = 0}):Play()
-end)
+-- Помощник создания стилизованных кнопок с микро-анимациями
+local function createButton(text, yPos, isPrimary)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -20, 0, 42)
+    btn.Position = UDim2.new(0, 10, 0, yPos)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 12
+    btn.Text = text
+    btn.AutoButtonColor = false
+    btn.Parent = rightPanel
 
-return btn
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = btn
 
+    local stroke = Instance.new("UIStroke")
+    stroke.Parent = btn
 
+    local btnScale = Instance.new("UIScale")
+    btnScale.Parent = btn
 
+    local defaultBg, hoverBg, defaultStroke, hoverStroke
+
+    if isPrimary then
+        defaultBg = Color3.fromRGB(245, 245, 245)
+        hoverBg = Color3.fromRGB(255, 255, 255)
+        defaultStroke = Color3.fromRGB(200, 200, 200)
+        hoverStroke = Color3.fromRGB(255, 255, 255)
+        btn.TextColor3 = Color3.fromRGB(15, 15, 15)
+    else
+        defaultBg = Color3.fromRGB(26, 26, 26)
+        hoverBg = Color3.fromRGB(36, 36, 36)
+        defaultStroke = Color3.fromRGB(50, 50, 50)
+        hoverStroke = Color3.fromRGB(90, 90, 90)
+        btn.TextColor3 = Color3.fromRGB(230, 230, 230)
+    end
+
+    btn.BackgroundColor3 = defaultBg
+    stroke.Color = defaultStroke
+    stroke.Thickness = 1
+
+    -- Анимация наведения
+    btn.MouseEnter:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.18), {BackgroundColor3 = hoverBg}):Play()
+        TweenService:Create(stroke, TweenInfo.new(0.18), {Color = hoverStroke, Thickness = 1.4}):Play()
+        TweenService:Create(btnScale, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Scale = 1.02}):Play()
+    end)
+
+    btn.MouseLeave:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.18), {BackgroundColor3 = defaultBg}):Play()
+        TweenService:Create(stroke, TweenInfo.new(0.18), {Color = defaultStroke, Thickness = 1}):Play()
+        TweenService:Create(btnScale, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Scale = 1}):Play()
+    end)
+
+    -- Анимация клика (пружина)
+    btn.MouseButton1Down:Connect(function()
+        TweenService:Create(btnScale, TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Scale = 0.95}):Play()
+    end)
+
+    btn.MouseButton1Up:Connect(function()
+        TweenService:Create(btnScale, TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1.02}):Play()
+    end)
+
+    return btn
 end
 
 local btnSelect = createButton("RAM SELECT", 70, true)
 local btnAll    = createButton("RAM ALL", 122, false)
 local btnStop   = createButton("STOP", 174, false)
-
--- STREAMING_CHUNK:Configuring mobile toggle button and interactions...
 
 -- 2. ПЛАВАЮЩАЯ КНОПКА ДЛЯ ТЕЛЕФОНОВ И ПЛАНШЕТОВ
 
@@ -233,6 +279,7 @@ mobileToggle.Text = "MENU"
 mobileToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
 mobileToggle.Font = Enum.Font.GothamBold
 mobileToggle.TextSize = 10
+mobileToggle.AutoButtonColor = false
 mobileToggle.Parent = screenGui
 
 local toggleCorner = Instance.new("UICorner")
@@ -244,45 +291,51 @@ toggleStroke.Color = Color3.fromRGB(65, 65, 65)
 toggleStroke.Thickness = 1.5
 toggleStroke.Parent = mobileToggle
 
+local mobileScale = Instance.new("UIScale")
+mobileScale.Parent = mobileToggle
+
+mobileToggle.MouseButton1Down:Connect(function()
+    TweenService:Create(mobileScale, TweenInfo.new(0.1), {Scale = 0.9}):Play()
+end)
+
+mobileToggle.MouseButton1Up:Connect(function()
+    TweenService:Create(mobileScale, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
+end)
+
 local isDraggingMobile = false
 local mobileDragStart = nil
 local mobileStartPos = nil
 local mobileMoved = false
 
 mobileToggle.InputBegan:Connect(function(input)
-if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-isDraggingMobile = true
-mobileMoved = false
-mobileDragStart = input.Position
-mobileStartPos = mobileToggle.Position
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        isDraggingMobile = true
+        mobileMoved = false
+        mobileDragStart = input.Position
+        mobileStartPos = mobileToggle.Position
 
-    input.Changed:Connect(function()
-        if input.UserInputState == Enum.UserInputState.End then
-            isDraggingMobile = false
-        end
-    end)
-end
-
-
-
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                isDraggingMobile = false
+            end
+        end)
+    end
 end)
 
 UserInputService.InputChanged:Connect(function(input)
-if isDraggingMobile and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-local delta = input.Position - mobileDragStart
-if delta.Magnitude > 6 then
-mobileMoved = true
-end
-mobileToggle.Position = UDim2.new(
-mobileStartPos.X.Scale,
-mobileStartPos.X.Offset + delta.X,
-mobileStartPos.Y.Scale,
-mobileStartPos.Y.Offset + delta.Y
-)
-end
+    if isDraggingMobile and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - mobileDragStart
+        if delta.Magnitude > 6 then
+            mobileMoved = true
+        end
+        mobileToggle.Position = UDim2.new(
+            mobileStartPos.X.Scale,
+            mobileStartPos.X.Offset + delta.X,
+            mobileStartPos.Y.Scale,
+            mobileStartPos.Y.Offset + delta.Y
+        )
+    end
 end)
-
--- STREAMING_CHUNK:Implementing window dragging mechanics...
 
 -- 3. ПЕРЕТАСКИВАНИЕ ОКНА (DRAGGING PC/TOUCH)
 
@@ -290,403 +343,405 @@ local draggingMain = false
 local mainDragStart, mainStartPos, mainDragInput
 
 topBar.InputBegan:Connect(function(input)
-if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-draggingMain = true
-mainDragStart = input.Position
-mainStartPos = mainFrame.Position
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        draggingMain = true
+        mainDragStart = input.Position
+        mainStartPos = mainFrame.Position
 
-    input.Changed:Connect(function()
-        if input.UserInputState == Enum.UserInputState.End then
-            draggingMain = false
-        end
-    end)
-end
-
-
-
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                draggingMain = false
+            end
+        end)
+    end
 end)
 
 topBar.InputChanged:Connect(function(input)
-if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-mainDragInput = input
-end
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        mainDragInput = input
+    end
 end)
 
 UserInputService.InputChanged:Connect(function(input)
-if input == mainDragInput and draggingMain then
-local delta = input.Position - mainDragStart
-mainFrame.Position = UDim2.new(
-mainStartPos.X.Scale,
-mainStartPos.X.Offset + delta.X,
-mainStartPos.Y.Scale,
-mainStartPos.Y.Offset + delta.Y
-)
-end
+    if input == mainDragInput and draggingMain then
+        local delta = input.Position - mainDragStart
+        mainFrame.Position = UDim2.new(
+            mainStartPos.X.Scale,
+            mainStartPos.X.Offset + delta.X,
+            mainStartPos.Y.Scale,
+            mainStartPos.Y.Offset + delta.Y
+        )
+    end
 end)
 
--- STREAMING_CHUNK:Configuring menu toggling shortcuts and visibility...
-
--- 4. ОТКРЫТИЕ / ЗАКРЫТИЕ МЕНЮ
+-- 4. ОТКРЫТИЕ / ЗАКРЫТИЕ МЕНЮ С ПЛАВНЫМ POP-IN / POP-OUT
 
 local isGuiOpen = true
+local isTweening = false
 
 local function toggleMenu()
-isGuiOpen = not isGuiOpen
-mainFrame.Visible = isGuiOpen
+    if isTweening then return end
+    isTweening = true
+    isGuiOpen = not isGuiOpen
+
+    if isGuiOpen then
+        mainFrame.Visible = true
+        mainScale.Scale = 0.8
+        local tween = TweenService:Create(mainScale, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1})
+        tween:Play()
+        tween.Completed:Connect(function()
+            isTweening = false
+        end)
+    else
+        local tween = TweenService:Create(mainScale, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {Scale = 0.8})
+        tween:Play()
+        tween.Completed:Connect(function()
+            mainFrame.Visible = false
+            isTweening = false
+        end)
+    end
 end
 
 closeButton.MouseButton1Click:Connect(toggleMenu)
 
 mobileToggle.Activated:Connect(function()
-if not mobileMoved then
-toggleMenu()
-end
+    if not mobileMoved then
+        toggleMenu()
+    end
 end)
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
-if not gameProcessed and input.KeyCode == TOGGLE_KEY then
-toggleMenu()
-end
+    if not gameProcessed and input.KeyCode == TOGGLE_KEY then
+        toggleMenu()
+    end
 end)
 
--- STREAMING_CHUNK:Implementing dynamic player list cards...
-
--- 5. ДИНАМИЧЕСКИЙ СПИСОК ИГРОКОВ С КРУГЛЫМИ АВАТАРАМИ
+-- 5. ДИНАМИЧЕСКИЙ СПИСОК ИГРОКОВ С КАРТОЧКАМИ И АНИМАЦИЯМИ
 
 local selectedTarget = nil
 
 local function createPlayerCard(player)
-if player == LocalPlayer then return end
+    if player == LocalPlayer then return end
 
-local card = Instance.new("TextButton")
-card.Name = player.Name
-card.Size = UDim2.new(1, 0, 0, 44)
-card.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
-card.Text = ""
-card.AutoButtonColor = false
-card.Parent = playerScroll
+    local card = Instance.new("TextButton")
+    card.Name = player.Name
+    card.Size = UDim2.new(1, 0, 0, 44)
+    card.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+    card.Text = ""
+    card.AutoButtonColor = false
+    card.Parent = playerScroll
 
-local cardCorner = Instance.new("UICorner")
-cardCorner.CornerRadius = UDim.new(0, 8)
-cardCorner.Parent = card
+    local cardCorner = Instance.new("UICorner")
+    cardCorner.CornerRadius = UDim.new(0, 8)
+    cardCorner.Parent = card
 
-local cardStroke = Instance.new("UIStroke")
-cardStroke.Color = Color3.fromRGB(38, 38, 38)
-cardStroke.Thickness = 1
-cardStroke.Parent = card
+    local cardStroke = Instance.new("UIStroke")
+    cardStroke.Color = Color3.fromRGB(38, 38, 38)
+    cardStroke.Thickness = 1
+    cardStroke.Parent = card
 
-local avatar = Instance.new("ImageLabel")
-avatar.Size = UDim2.new(0, 32, 0, 32)
-avatar.Position = UDim2.new(0, 6, 0.5, -16)
-avatar.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-avatar.Parent = card
+    local avatar = Instance.new("ImageLabel")
+    avatar.Size = UDim2.new(0, 32, 0, 32)
+    avatar.Position = UDim2.new(0, 6, 0.5, -16)
+    avatar.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    avatar.Parent = card
 
-local avatarCorner = Instance.new("UICorner")
-avatarCorner.CornerRadius = UDim.new(1, 0)
-avatarCorner.Parent = avatar
+    local avatarCorner = Instance.new("UICorner")
+    avatarCorner.CornerRadius = UDim.new(1, 0)
+    avatarCorner.Parent = avatar
 
-task.spawn(function()
-    local content, isReady = Players:GetUserThumbnailAsync(
-        player.UserId,
-        Enum.ThumbnailType.HeadShot,
-        Enum.ThumbnailSize.Size48x48
-    )
-    if isReady then
-        avatar.Image = content
-    end
-end)
-
-local nameLabel = Instance.new("TextLabel")
-nameLabel.Size = UDim2.new(1, -50, 1, 0)
-nameLabel.Position = UDim2.new(0, 46, 0, 0)
-nameLabel.BackgroundTransparency = 1
-nameLabel.Text = player.DisplayName .. " <font color='rgb(120,120,120)'>@" .. player.Name .. "</font>"
-nameLabel.RichText = true
-nameLabel.TextColor3 = Color3.fromRGB(240, 240, 240)
-nameLabel.Font = Enum.Font.GothamMedium
-nameLabel.TextSize = 12
-nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-nameLabel.Parent = card
-
-card.MouseButton1Click:Connect(function()
-    selectedTarget = player
-    selectedLabel.Text = "TARGET: " .. string.upper(player.DisplayName)
-    
-    for _, otherCard in ipairs(playerScroll:GetChildren()) do
-        if otherCard:IsA("TextButton") then
-            otherCard.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+    task.spawn(function()
+        local content, isReady = Players:GetUserThumbnailAsync(
+            player.UserId,
+            Enum.ThumbnailType.HeadShot,
+            Enum.ThumbnailSize.Size48x48
+        )
+        if isReady then
+            avatar.Image = content
         end
-    end
-    card.BackgroundColor3 = Color3.fromRGB(42, 42, 42)
-end)
+    end)
 
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Size = UDim2.new(1, -50, 1, 0)
+    nameLabel.Position = UDim2.new(0, 46, 0, 0)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = player.DisplayName .. " <font color='rgb(120,120,120)'>@" .. player.Name .. "</font>"
+    nameLabel.RichText = true
+    nameLabel.TextColor3 = Color3.fromRGB(240, 240, 240)
+    nameLabel.Font = Enum.Font.GothamMedium
+    nameLabel.TextSize = 12
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    nameLabel.Parent = card
 
+    -- Ховер-эффект карточки
+    card.MouseEnter:Connect(function()
+        if selectedTarget ~= player then
+            TweenService:Create(card, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(34, 34, 34)}):Play()
+            TweenService:Create(cardStroke, TweenInfo.new(0.15), {Color = Color3.fromRGB(60, 60, 60)}):Play()
+        end
+    end)
 
+    card.MouseLeave:Connect(function()
+        if selectedTarget ~= player then
+            TweenService:Create(card, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(26, 26, 26)}):Play()
+            TweenService:Create(cardStroke, TweenInfo.new(0.15), {Color = Color3.fromRGB(38, 38, 38)}):Play()
+        end
+    end)
+
+    card.MouseButton1Click:Connect(function()
+        selectedTarget = player
+        selectedLabel.Text = "TARGET: " .. string.upper(player.DisplayName)
+
+        for _, otherCard in ipairs(playerScroll:GetChildren()) do
+            if otherCard:IsA("TextButton") then
+                local stroke = otherCard:FindFirstChildOfClass("UIStroke")
+                TweenService:Create(otherCard, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(26, 26, 26)}):Play()
+                if stroke then
+                    TweenService:Create(stroke, TweenInfo.new(0.15), {Color = Color3.fromRGB(38, 38, 38)}):Play()
+                end
+            end
+        end
+
+        TweenService:Create(card, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(44, 44, 44)}):Play()
+        TweenService:Create(cardStroke, TweenInfo.new(0.15), {Color = Color3.fromRGB(150, 150, 150)}):Play()
+    end)
 end
 
 local function refreshList()
-for _, child in ipairs(playerScroll:GetChildren()) do
-if child:IsA("TextButton") then
-child:Destroy()
-end
-end
-for _, p in ipairs(Players:GetPlayers()) do
-createPlayerCard(p)
-end
+    for _, child in ipairs(playerScroll:GetChildren()) do
+        if child:IsA("TextButton") then
+            child:Destroy()
+        end
+    end
+    for _, p in ipairs(Players:GetPlayers()) do
+        createPlayerCard(p)
+    end
 end
 
 Players.PlayerAdded:Connect(createPlayerCard)
 Players.PlayerRemoving:Connect(function(player)
-local card = playerScroll:FindFirstChild(player.Name)
-if card then card:Destroy() end
-if selectedTarget == player then
-selectedTarget = nil
-selectedLabel.Text = "TARGET: NONE"
-end
+    local card = playerScroll:FindFirstChild(player.Name)
+    if card then card:Destroy() end
+    if selectedTarget == player then
+        selectedTarget = nil
+        selectedLabel.Text = "TARGET: NONE"
+    end
 end)
 
 refreshList()
 
--- STREAMING_CHUNK:Implementing Rapid Ram / Skid Fling physics engine...
-
 -- 6. ЯДРО: ЛОГИКА RAPID RAM FLING (SKID FLING)
 
-local activeMode = "None"     -- "Select", "All", "None"
+local activeMode = "None"
 local activeThread = nil
 
 local function stopFling()
-activeMode = "None"
-genv.__flingActive = false
+    activeMode = "None"
+    genv.__flingActive = false
 
-if activeThread then
-    task.cancel(activeThread)
-    activeThread = nil
-end
+    if activeThread then
+        task.cancel(activeThread)
+        activeThread = nil
+    end
 
-local myChar = LocalPlayer.Character
-local myHum  = myChar and myChar:FindFirstChildOfClass("Humanoid")
-local myRoot = myHum and myHum.RootPart
+    local myChar = LocalPlayer.Character
+    local myHum  = myChar and myChar:FindFirstChildOfClass("Humanoid")
+    local myRoot = myHum and myHum.RootPart
 
-if myHum then
-    myHum:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
-end
-if myRoot then
-    myRoot.AssemblyLinearVelocity = Vector3.zero
-    myRoot.AssemblyAngularVelocity = Vector3.zero
-end
+    if myHum then
+        myHum:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
+    end
+    if myRoot then
+        myRoot.AssemblyLinearVelocity = Vector3.zero
+        myRoot.AssemblyAngularVelocity = Vector3.zero
+    end
 
-workspace.CurrentCamera.CameraSubject = myHum
-if genv.FPDH then
-    workspace.FallenPartsDestroyHeight = genv.FPDH
-end
+    workspace.CurrentCamera.CameraSubject = myHum
+    if genv.FPDH then
+        workspace.FallenPartsDestroyHeight = genv.FPDH
+    end
 
-statusLabel.Text = "STATUS: STOPPED"
-
-
-
+    updateStatus("STATUS: STOPPED", Color3.fromRGB(200, 70, 70))
 end
 
 local function rapidRamFling(TargetPlayer, maxDuration)
-maxDuration = maxDuration or 2.5
-local Character = LocalPlayer.Character
-local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
-local RootPart = Humanoid and Humanoid.RootPart
+    maxDuration = maxDuration or 2.5
+    local Character = LocalPlayer.Character
+    local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+    local RootPart = Humanoid and Humanoid.RootPart
 
-if not Character or not Humanoid or not RootPart then
-    statusLabel.Text = "STATUS: CHAR NOT READY"
-    return false
-end
-
-local TCharacter = TargetPlayer and TargetPlayer.Character
-if not TCharacter then
-    statusLabel.Text = "STATUS: NO TARGET CHAR"
-    return false
-end
-
-local THumanoid = TCharacter:FindFirstChildOfClass("Humanoid")
-local TRootPart = THumanoid and THumanoid.RootPart
-local THead = TCharacter:FindFirstChild("Head")
-local Accessory = TCharacter:FindFirstChildOfClass("Accessory")
-local Handle = Accessory and Accessory:FindFirstChild("Handle")
-
-if THumanoid and THumanoid.Sit then
-    statusLabel.Text = "STATUS: TARGET IS SITTING"
-    return false
-end
-
--- Сохраняем исходную позицию
-if RootPart.AssemblyLinearVelocity.Magnitude < 50 then
-    genv.OldPos = RootPart.CFrame
-end
-
--- Наведение камеры на цель
-if THead then
-    workspace.CurrentCamera.CameraSubject = THead
-elseif Handle then
-    workspace.CurrentCamera.CameraSubject = Handle
-elseif THumanoid and TRootPart then
-    workspace.CurrentCamera.CameraSubject = THumanoid
-end
-
-local TargetBasePart = TRootPart or THead or Handle
-if not TargetBasePart then
-    statusLabel.Text = "STATUS: NO VALID TARGET PART"
-    return false
-end
-
-genv.__flingActive = true
-
--- Отключаем коллизию своего персонажа
-for _, part in ipairs(Character:GetDescendants()) do
-    if part:IsA("BasePart") then
-        part.CanCollide = false
+    if not Character or not Humanoid or not RootPart then
+        updateStatus("STATUS: CHAR NOT READY")
+        return false
     end
-end
 
--- Настройка силового импульса
-workspace.FallenPartsDestroyHeight = 0/0
-Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, false)
+    local TCharacter = TargetPlayer and TargetPlayer.Character
+    if not TCharacter then
+        updateStatus("STATUS: NO TARGET CHAR")
+        return false
+    end
 
-local BV = Instance.new("BodyVelocity")
-BV.Parent = RootPart
-BV.Velocity = Vector3.zero
-BV.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+    local THumanoid = TCharacter:FindFirstChildOfClass("Humanoid")
+    local TRootPart = THumanoid and THumanoid.RootPart
+    local THead = TCharacter:FindFirstChild("Head")
+    local Accessory = TCharacter:FindFirstChildOfClass("Accessory")
+    local Handle = Accessory and Accessory:FindFirstChild("Handle")
 
--- Вспомогательная функция позиционирования с безумной скоростью
-local FPos = function(BasePart, Pos, Ang)
-    if not RootPart or not RootPart.Parent then return end
-    RootPart.CFrame = CFrame.new(BasePart.Position) * Pos * Ang
-    Character:SetPrimaryPartCFrame(CFrame.new(BasePart.Position) * Pos * Ang)
-    RootPart.AssemblyLinearVelocity = Vector3.new(9e7, 9e7 * 10, 9e7)
-    RootPart.AssemblyAngularVelocity = Vector3.new(9e8, 9e8, 9e8)
-end
+    if THumanoid and THumanoid.Sit then
+        updateStatus("STATUS: TARGET IS SITTING")
+        return false
+    end
 
-local startTime = tick()
-local Angle = 0
+    if RootPart.AssemblyLinearVelocity.Magnitude < 50 then
+        genv.OldPos = RootPart.CFrame
+    end
 
--- Главный таранный цикл (Rapid Ram Loop)
-repeat
-    if not RootPart or not THumanoid or THumanoid.Health <= 0 then break end
+    if THead then
+        workspace.CurrentCamera.CameraSubject = THead
+    elseif Handle then
+        workspace.CurrentCamera.CameraSubject = Handle
+    elseif THumanoid and TRootPart then
+        workspace.CurrentCamera.CameraSubject = THumanoid
+    end
 
-    if BasePart and BasePart.Parent then
-        if BasePart.AssemblyLinearVelocity.Magnitude < 50 then
-            Angle = Angle + 100
-            FPos(BasePart, CFrame.new(0, 1.5, 0) + THumanoid.MoveDirection * BasePart.AssemblyLinearVelocity.Magnitude / 1.25, CFrame.Angles(math.rad(Angle), 0, 0))
-            task.wait()
-            FPos(BasePart, CFrame.new(0, -1.5, 0) + THumanoid.MoveDirection * BasePart.AssemblyLinearVelocity.Magnitude / 1.25, CFrame.Angles(math.rad(Angle), 0, 0))
-            task.wait()
-            FPos(BasePart, CFrame.new(0, 1.5, 0) + THumanoid.MoveDirection, CFrame.Angles(math.rad(Angle), 0, 0))
-            task.wait()
-            FPos(BasePart, CFrame.new(0, -1.5, 0) + THumanoid.MoveDirection, CFrame.Angles(math.rad(Angle), 0, 0))
-            task.wait()
-        else
-            FPos(BasePart, CFrame.new(0, 1.5, THumanoid.WalkSpeed), CFrame.Angles(math.rad(90), 0, 0))
-            task.wait()
-            FPos(BasePart, CFrame.new(0, -1.5, -THumanoid.WalkSpeed), CFrame.Angles(0, 0, 0))
-            task.wait()
-            FPos(BasePart, CFrame.new(0, 1.5, THumanoid.WalkSpeed), CFrame.Angles(math.rad(90), 0, 0))
-            task.wait()
-            FPos(BasePart, CFrame.new(0, -1.5, 0), CFrame.Angles(math.rad(90), 0, 0))
-            task.wait()
-            FPos(BasePart, CFrame.new(0, -1.5, 0), CFrame.Angles(0, 0, 0))
-            task.wait()
+    local TargetBasePart = TRootPart or THead or Handle
+    if not TargetBasePart then
+        updateStatus("STATUS: NO VALID TARGET PART")
+        return false
+    end
+
+    genv.__flingActive = true
+
+    for _, part in ipairs(Character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = false
         end
-    else
-        break
     end
-until (tick() - startTime) > maxDuration or not genv.__flingActive or activeMode == "None"
 
--- Завершение и очистка
-if BV then BV:Destroy() end
-Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
-workspace.CurrentCamera.CameraSubject = Humanoid
+    workspace.FallenPartsDestroyHeight = 0/0
+    Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, false)
 
--- Безопасное возвращение персонажа на прежнее место
-if genv.OldPos and RootPart and RootPart.Parent then
-    local returnTime = tick()
+    local BV = Instance.new("BodyVelocity")
+    BV.Parent = RootPart
+    BV.Velocity = Vector3.zero
+    BV.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+
+    local FPos = function(BasePart, Pos, Ang)
+        if not RootPart or not RootPart.Parent then return end
+        RootPart.CFrame = CFrame.new(BasePart.Position) * Pos * Ang
+        Character:SetPrimaryPartCFrame(CFrame.new(BasePart.Position) * Pos * Ang)
+        RootPart.AssemblyLinearVelocity = Vector3.new(9e7, 9e7 * 10, 9e7)
+        RootPart.AssemblyAngularVelocity = Vector3.new(9e8, 9e8, 9e8)
+    end
+
+    local startTime = tick()
+    local Angle = 0
+
     repeat
-        RootPart.CFrame = genv.OldPos * CFrame.new(0, 0.5, 0)
-        Character:SetPrimaryPartCFrame(genv.OldPos * CFrame.new(0, 0.5, 0))
-        Humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+        if not RootPart or not THumanoid or THumanoid.Health <= 0 then break end
 
-        for _, part in ipairs(Character:GetChildren()) do
-            if part:IsA("BasePart") then
-                part.AssemblyLinearVelocity = Vector3.zero
-                part.AssemblyAngularVelocity = Vector3.zero
+        if TargetBasePart and TargetBasePart.Parent then
+            if TargetBasePart.AssemblyLinearVelocity.Magnitude < 50 then
+                Angle = Angle + 100
+                FPos(TargetBasePart, CFrame.new(0, 1.5, 0) + THumanoid.MoveDirection * TargetBasePart.AssemblyLinearVelocity.Magnitude / 1.25, CFrame.Angles(math.rad(Angle), 0, 0))
+                task.wait()
+                FPos(TargetBasePart, CFrame.new(0, -1.5, 0) + THumanoid.MoveDirection * TargetBasePart.AssemblyLinearVelocity.Magnitude / 1.25, CFrame.Angles(math.rad(Angle), 0, 0))
+                task.wait()
+                FPos(TargetBasePart, CFrame.new(0, 1.5, 0) + THumanoid.MoveDirection, CFrame.Angles(math.rad(Angle), 0, 0))
+                task.wait()
+                FPos(TargetBasePart, CFrame.new(0, -1.5, 0) + THumanoid.MoveDirection, CFrame.Angles(math.rad(Angle), 0, 0))
+                task.wait()
+            else
+                FPos(TargetBasePart, CFrame.new(0, 1.5, THumanoid.WalkSpeed), CFrame.Angles(math.rad(90), 0, 0))
+                task.wait()
+                FPos(TargetBasePart, CFrame.new(0, -1.5, -THumanoid.WalkSpeed), CFrame.Angles(0, 0, 0))
+                task.wait()
+                FPos(TargetBasePart, CFrame.new(0, 1.5, THumanoid.WalkSpeed), CFrame.Angles(math.rad(90), 0, 0))
+                task.wait()
+                FPos(TargetBasePart, CFrame.new(0, -1.5, 0), CFrame.Angles(math.rad(90), 0, 0))
+                task.wait()
+                FPos(TargetBasePart, CFrame.new(0, -1.5, 0), CFrame.Angles(0, 0, 0))
+                task.wait()
             end
+        else
+            break
         end
-        task.wait()
-    until (RootPart.Position - genv.OldPos.Position).Magnitude < 25 or (tick() - returnTime) > 1.5
+    until (tick() - startTime) > maxDuration or not genv.__flingActive or activeMode == "None"
+
+    if BV then BV:Destroy() end
+    Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
+    workspace.CurrentCamera.CameraSubject = Humanoid
+
+    if genv.OldPos and RootPart and RootPart.Parent then
+        local returnTime = tick()
+        repeat
+            RootPart.CFrame = genv.OldPos * CFrame.new(0, 0.5, 0)
+            Character:SetPrimaryPartCFrame(genv.OldPos * CFrame.new(0, 0.5, 0))
+            Humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+
+            for _, part in ipairs(Character:GetChildren()) do
+                if part:IsA("BasePart") then
+                    part.AssemblyLinearVelocity = Vector3.zero
+                    part.AssemblyAngularVelocity = Vector3.zero
+                end
+            end
+            task.wait()
+        until (RootPart.Position - genv.OldPos.Position).Magnitude < 25 or (tick() - returnTime) > 1.5
+    end
+
+    if genv.FPDH then
+        workspace.FallenPartsDestroyHeight = genv.FPDH
+    end
+
+    return true
 end
-
-if genv.FPDH then
-    workspace.FallenPartsDestroyHeight = genv.FPDH
-end
-
-return true
-
-
-
-end
-
--- STREAMING_CHUNK:Connecting GUI button action handlers...
 
 -- 7. ОБРАБОТЧИКИ КНОПОК ДЕЙСТВИЙ
 
 btnSelect.MouseButton1Click:Connect(function()
-if not selectedTarget then
-statusLabel.Text = "STATUS: NO TARGET"
-return
-end
-
-stopFling()
-activeMode = "Select"
-statusLabel.Text = "RAMMING: " .. string.upper(selectedTarget.DisplayName)
-
-activeThread = task.spawn(function()
-    rapidRamFling(selectedTarget, 3.0)
-
-    if activeMode == "Select" then
-        statusLabel.Text = "STATUS: RAM COMPLETED"
-        activeMode = "None"
+    if not selectedTarget then
+        updateStatus("STATUS: NO TARGET", Color3.fromRGB(220, 100, 100))
+        return
     end
-end)
 
+    stopFling()
+    activeMode = "Select"
+    updateStatus("RAMMING: " .. string.upper(selectedTarget.DisplayName), Color3.fromRGB(100, 220, 100))
 
+    activeThread = task.spawn(function()
+        rapidRamFling(selectedTarget, 3.0)
 
+        if activeMode == "Select" then
+            updateStatus("STATUS: COMPLETED", Color3.fromRGB(150, 150, 150))
+            activeMode = "None"
+        end
+    end)
 end)
 
 btnAll.MouseButton1Click:Connect(function()
-stopFling()
-activeMode = "All"
-statusLabel.Text = "STATUS: RAMMING ALL..."
+    stopFling()
+    activeMode = "All"
+    updateStatus("STATUS: RAMMING ALL...", Color3.fromRGB(220, 180, 80))
 
-activeThread = task.spawn(function()
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if activeMode ~= "All" then break end
-        if plr ~= LocalPlayer then
-            statusLabel.Text = "RAM ALL -> " .. string.upper(plr.DisplayName)
-            rapidRamFling(plr, 1.8)
-            task.wait(0.1)
+    activeThread = task.spawn(function()
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if activeMode ~= "All" then break end
+            if plr ~= LocalPlayer then
+                updateStatus("RAM ALL -> " .. string.upper(plr.DisplayName), Color3.fromRGB(220, 180, 80))
+                rapidRamFling(plr, 1.8)
+                task.wait(0.1)
+            end
         end
-    end
 
-    if activeMode == "All" then
-        statusLabel.Text = "STATUS: ALL RAMMED"
-        activeMode = "None"
-    end
-end)
-
-
-
+        if activeMode == "All" then
+            updateStatus("STATUS: ALL RAMMED", Color3.fromRGB(150, 150, 150))
+            activeMode = "None"
+        end
+    end)
 end)
 
 btnStop.MouseButton1Click:Connect(function()
-stopFling()
+    stopFling()
 end)
 
-print("
-
-$$Rapid Ram Fling$$
-
- Мощный Skid Fling успешно загружен!")
+print("[Monochrome GUI] Интерфейс с анимациями успешно загружен!")
